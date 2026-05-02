@@ -1,0 +1,524 @@
+{% extends "base.html" %}
+{% block title %}{{ affaire.name }}{% endblock %}
+
+{% block head %}
+<script>
+  window.AFFAIRE_ID          = {{ affaire.id }};
+  window.AFFAIRE_SDO         = {{ affaire.surface_sdo }};
+  window.AFFAIRE_KVA         = {{ affaire.kva_cible or 800 }};
+  window.AFFAIRE_PHASE       = "{{ affaire.phase_etude or 'APD' }}";
+  window.AFFAIRE_TAUX_PHASE  = {{ affaire.taux_phase or 3 }};
+  window.AFFAIRE_INCERTITUDE = {{ affaire.taux_incertitude or 3 }};
+  window.AFFAIRE_RISQUE      = {{ affaire.coef_risque or 1 }};
+  window.AFFAIRE_COMPLEXITY  = {
+    cfo: {{ affaire.coef_complexity_cfo }},
+    cfa: {{ affaire.coef_complexity_cfa }},
+    pv:  {{ affaire.coef_complexity_pv }},
+  };
+  window.RATIO_REFS = {
+    {% for chapter in tree %}{% for section in chapter.sections %}{% for art in section.articles %}
+    {{ art.id }}: {{ art.avg_pu_actualise or 0 }},
+    {% endfor %}{% endfor %}{% endfor %}
+  };
+  // Sprint 7 : unités décorrélées de la SDO (u/ens/ml fixes)
+  window.SDO_FIXED_UNITS = ['u','ens','ml','U','ENS','ML','pce','PCE'];
+  // Sprint 7 : état initial des chapitres/sections (checkbox + mode Macro)
+  window.CHAPTER_STATE = {
+    {% for chapter in tree %}
+    "chap:{{ chapter.designation | e }}": {
+      is_included: {{ 'true' if chapter.is_included else 'false' }},
+      use_macro:   {{ 'true' if chapter.use_macro   else 'false' }},
+      qty:         {{ chapter.qty or 1 }},
+      label:       "{{ chapter.designation | e }}"
+    },
+    {% for section in chapter.sections %}
+    "sect:{{ chapter.designation | e }}|{{ section.designation | e }}": {
+      is_included: {{ 'true' if section.is_included else 'false' }},
+      use_macro:   {{ 'true' if section.use_macro   else 'false' }},
+      qty:         {{ section.qty or 1 }},
+      label:       "{{ section.designation | e }}"
+    },
+    {% endfor %}{% endfor %}
+  };
+</script>
+<style>
+  /* ── KPI éditables ─────────────────────────────────────────── */
+  .kpi-input {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 700;
+    border-radius: 4px;
+    padding: 2px 6px;
+    width: 90px;
+    text-align: right;
+    transition: border-color .15s;
+  }
+  .kpi-input:hover, .kpi-input:focus {
+    border-color: var(--accent);
+    outline: none;
+  }
+  .kpi-select {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--accent2);
+    font-size: 13px;
+    font-weight: 700;
+    border-radius: 4px;
+    padding: 3px 6px;
+    cursor: pointer;
+    transition: border-color .15s;
+  }
+  .kpi-select:focus { border-color: var(--accent); outline: none; }
+
+  /* ── Barre provisions ──────────────────────────────────────── */
+  .provisions-bar {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 8px 24px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border-light);
+    flex-wrap: wrap;
+  }
+  .prov-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .prov-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--text2);
+    white-space: nowrap;
+  }
+  .prov-value {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent2);
+    min-width: 34px;
+  }
+  .prov-sep { width: 1px; height: 24px; background: var(--border); }
+  input[type=range].prov-slider {
+    width: 90px;
+    accent-color: var(--accent2);
+    cursor: pointer;
+  }
+  .kpi-provisions-value {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--accent);
+  }
+</style>
+{% endblock %}
+
+{% block topbar %}
+<div class="topbar">
+  <div style="display:flex;align-items:center;gap:12px">
+    <a href="{{ url_for('index') }}" style="color:var(--text-muted);font-size:13px">← Affaires</a>
+    <span style="color:var(--border)">|</span>
+    <a href="{{ url_for('affaire_edit', affaire_id=affaire.id) }}" style="color:var(--text-muted);font-size:13px" title="Modifier la fiche affaire">✏️ Modifier la fiche</a>
+    <span style="color:var(--border)">|</span>
+    <span class="topbar-title">{{ affaire.name }}</span>
+    {% if affaire.client %}
+    <span class="topbar-sub">{{ affaire.client }}</span>
+    {% endif %}
+    <span class="status-badge status-{{ affaire.statut }}">{{ affaire.statut }}</span>
+  </div>
+  <div class="topbar-actions">
+    <div class="view-mode-group" style="display:flex;gap:4px" title="Mode d'affichage">
+      <button class="btn btn-sm btn-secondary" id="btn-mode-1"
+              onclick="setViewMode(1)" title="Mode 1 : têtes de chapitres uniquement (CFO/CFA/PV)">1</button>
+      <button class="btn btn-sm btn-secondary" id="btn-mode-2"
+              onclick="setViewMode(2)" title="Mode 2 : têtes + sous-chapitres">2</button>
+      <button class="btn btn-sm btn-primary" id="btn-mode-3"
+              onclick="setViewMode(3)" title="Mode 3 : toutes les lignes">3</button>
+    </div>
+
+    <span style="width:1px;height:20px;background:var(--border);display:inline-block"></span>
+
+    <div style="display:flex;gap:4px">
+      {% for lot_name in ['ALL','CFO','CFA','PV'] %}
+      <button class="btn btn-sm {% if lot_name == 'ALL' %}btn-primary{% else %}btn-secondary{% endif %}"
+              data-lot-filter="{{ lot_name }}"
+              onclick="filterLot('{{ lot_name }}')">{{ lot_name }}</button>
+      {% endfor %}
+    </div>
+
+    <span style="width:1px;height:20px;background:var(--border);display:inline-block"></span>
+
+    <button class="btn btn-sm btn-secondary" id="btn-zero"
+            onclick="toggleZeroLines()" title="Masquer/afficher les lignes sans prix">
+      👁 Masquer zéros
+    </button>
+
+    <span style="width:1px;height:20px;background:var(--border);display:inline-block"></span>
+
+    <button class="btn btn-sm btn-success" onclick="saveAffaire()">💾 Enregistrer</button>
+    <button class="btn btn-sm btn-secondary" onclick="exportExcel()">📥 Excel</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<!-- ── En-tête de vue (charte ma_charte.css) ─────────────────── -->
+<div class="app-header">
+  <span class="app-name">Estimation Élec</span>
+  <span class="app-file">{{ affaire.name }}{% if affaire.client %} — {{ affaire.client }}{% endif %}</span>
+  <span class="app-date">{{ (affaire.date_creation or affaire.created_at[:10]) | date_fr }}</span>
+</div>
+
+<!-- ── KPI Cards ─────────────────────────────────────────────── -->
+<div class="kpi-bar">
+
+  <div class="kpi-item cfo">
+    <span class="kpi-label">CFO</span>
+    <span class="kpi-value cfo" id="kpi-cfo">{{ totals.CFO | eur }}</span>
+  </div>
+
+  <div class="kpi-item cfa">
+    <span class="kpi-label">CFA / SSI</span>
+    <span class="kpi-value cfa" id="kpi-cfa">{{ totals.CFA | eur }}</span>
+  </div>
+
+  <div class="kpi-item pv">
+    <span class="kpi-label">PV</span>
+    <span class="kpi-value pv" id="kpi-pv">{{ totals.PV | eur }}</span>
+  </div>
+
+  <div class="kpi-item total">
+    <span class="kpi-label">Total HT</span>
+    <span class="kpi-value total" id="kpi-total">{{ totals.ALL | eur }}</span>
+    <span class="kpi-sub" id="kpi-m2">{% if totals.m2 %}{{ totals.m2 | eur }}/m²{% else %}—{% endif %}</span>
+  </div>
+
+  <div class="kpi-item" style="border-color:rgba(213,243,17,.35);margin-left:auto;min-width:165px">
+    <span class="kpi-label" style="color:var(--accent)">Total + Provisions</span>
+    <span class="kpi-provisions-value" id="kpi-provisions">{{ totals.ALL | eur }}</span>
+    <span class="kpi-sub" style="color:var(--accent2)">incert. + risque inclus</span>
+  </div>
+
+</div>
+
+<!-- ── Barre paramètres ligne 1 : Cadrage (SDO / kVA / Phase) ──── -->
+<div class="provisions-bar">
+
+  <div class="prov-item">
+    <span class="prov-label">SDO</span>
+    <input type="number" id="edit-sdo" class="kpi-input"
+           value="{{ affaire.surface_sdo | int }}" min="100" step="50"
+           title="Surface → recalcule tous les ratios surfaciques">
+    <span style="color:var(--text2);font-size:11px">m²</span>
+  </div>
+
+  <div class="prov-sep"></div>
+
+  <div class="prov-item">
+    <span class="prov-label">kVA</span>
+    <input type="number" id="edit-kva" class="kpi-input"
+           value="{{ (affaire.kva_cible or 800) | int }}" min="50" step="50"
+           title="Puissance souscrite TGBT">
+  </div>
+
+  <div class="prov-sep"></div>
+
+  <div class="prov-item">
+    <span class="prov-label">Phase</span>
+    <select id="edit-phase" class="kpi-select"
+            title="Preset du Taux Phase (paliers Egis)">
+      {% for ph in ['DIAG','APS','APD','PRO'] %}
+      <option value="{{ ph }}"
+              {% if (affaire.phase_etude or 'APD') == ph %}selected{% endif %}>{{ ph }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="prov-sep"></div>
+
+  <div class="prov-item">
+    <span class="prov-label">Bâtiment</span>
+    <select id="edit-category" class="kpi-select"
+            title="Type de bâtiment"
+            onchange="saveParam('category_id', this.value)">
+      <option value="">—</option>
+      {% for cat in categories %}
+      <option value="{{ cat.id }}"
+              {% if affaire.category_id == cat.id %}selected{% endif %}>{{ cat.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <!-- Complexité par lot — sliders éditables à droite -->
+  <div style="margin-left:auto;display:flex;align-items:center;gap:14px">
+    <div class="prov-item" title="Complexité CFO : pondère les prix CFO">
+      <span class="prov-label" style="color:var(--lot-cfo)">CFO</span>
+      <input type="range" id="cplx-cfo" class="prov-slider" style="accent-color:var(--lot-cfo)"
+             min="0.7" max="1.5" step="0.05"
+             value="{{ affaire.coef_complexity_cfo }}">
+      <span class="prov-value" id="label-cplx-cfo" style="color:var(--lot-cfo)">×{{ '%.2f' | format(affaire.coef_complexity_cfo) }}</span>
+    </div>
+    <div class="prov-item" title="Complexité CFA : pondère les prix CFA">
+      <span class="prov-label" style="color:var(--lot-cfa)">CFA</span>
+      <input type="range" id="cplx-cfa" class="prov-slider" style="accent-color:var(--lot-cfa)"
+             min="0.7" max="1.5" step="0.05"
+             value="{{ affaire.coef_complexity_cfa }}">
+      <span class="prov-value" id="label-cplx-cfa" style="color:var(--lot-cfa)">×{{ '%.2f' | format(affaire.coef_complexity_cfa) }}</span>
+    </div>
+    <div class="prov-item" title="Complexité PV : pondère les prix Photovoltaïque">
+      <span class="prov-label" style="color:var(--lot-pv)">PV</span>
+      <input type="range" id="cplx-pv" class="prov-slider" style="accent-color:var(--lot-pv)"
+             min="0.7" max="1.5" step="0.05"
+             value="{{ affaire.coef_complexity_pv }}">
+      <span class="prov-value" id="label-cplx-pv" style="color:var(--lot-pv)">×{{ '%.2f' | format(affaire.coef_complexity_pv) }}</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Barre paramètres ligne 2 : 3 Taxes indépendantes ──────── -->
+<div class="provisions-bar" style="background:var(--bg3);border-top:1px solid var(--border-light)">
+
+  <span style="font-size:10.5px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;
+               margin-right:6px">Taxes cumulatives</span>
+
+  <div class="prov-item" style="background:rgba(36,169,181,.08);padding:4px 10px;border-radius:4px;
+                                border:1px solid rgba(36,169,181,.25)">
+    <span class="prov-label" style="color:var(--accent2)">① Phase</span>
+    <input type="number" id="input-taux-phase" class="kpi-input"
+           value="{{ '%.1f' | format(affaire.taux_phase or 3) }}"
+           min="0" max="20" step="0.5"
+           style="width:68px;color:var(--accent2)">
+    <span style="color:var(--text2);font-size:11px">%</span>
+  </div>
+
+  <div class="prov-sep"></div>
+
+  <div class="prov-item" style="background:rgba(213,243,17,.06);padding:4px 10px;border-radius:4px;
+                                border:1px solid rgba(213,243,17,.25)">
+    <span class="prov-label" style="color:var(--accent)">② Incertitude</span>
+    <input type="number" id="input-incertitude" class="kpi-input"
+           value="{{ '%.1f' | format(affaire.taux_incertitude or 3) }}"
+           min="0" max="50" step="0.5"
+           style="width:68px;color:var(--accent)">
+    <span style="color:var(--text2);font-size:11px">%</span>
+  </div>
+
+  <div class="prov-sep"></div>
+
+  <div class="prov-item" style="background:rgba(245,166,35,.08);padding:4px 10px;border-radius:4px;
+                                border:1px solid rgba(245,166,35,.25)">
+    <span class="prov-label" style="color:var(--orange)">③ Risque / Aléa</span>
+    <input type="number" id="input-risque" class="kpi-input"
+           value="{{ '%.1f' | format(affaire.coef_risque or 1) }}"
+           min="0" max="30" step="0.5"
+           style="width:68px;color:var(--orange)">
+    <span style="color:var(--text2);font-size:11px">%</span>
+  </div>
+
+  <div style="margin-left:auto;font-size:11px;color:var(--text-muted);font-style:italic">
+    Formule : Total × (1+Phase) × (1+Incertitude) × (1+Risque)
+  </div>
+
+</div>
+
+<!-- Table DPGF -->
+<div style="padding:0 24px 24px">
+  <div class="dpgf-wrapper">
+    <table class="dpgf-table data-table" id="dpgf-table">
+      <thead>
+        <tr>
+          <th style="width:36px;text-align:center" title="Inclure/Exclure">☐</th>
+          <th class="col-desig">Désignation</th>
+          <th class="col-unit">U</th>
+          <th class="col-qty">Quantité</th>
+          <th class="col-pu">PU HT (€)</th>
+          <th class="col-total">Total HT (€)</th>
+          <th class="col-dev" title="Écart vs ratio de référence">Déviance</th>
+          <th class="col-fiab" title="Fiabilité du ratio source">Fiabilité</th>
+        </tr>
+      </thead>
+      <tbody>
+
+        {% set chapter_idx = namespace(v=0) %}
+        {% for chapter in tree %}
+          {% set chap_id = chapter.id %}
+          {% set chapter_idx.v = chapter_idx.v + 1 %}
+
+          {# Calcul du lot dominant du chapitre (insensible à la casse) #}
+          {% set chap_lot = 'CFO' %}
+          {% set desig_lower = chapter.designation | lower %}
+          {% if 'faible' in desig_lower or 'cfa' in desig_lower %}
+            {% set chap_lot = 'CFA' %}
+          {% elif 'photovolta' in desig_lower %}
+            {% set chap_lot = 'PV' %}
+          {% endif %}
+
+          <!-- Chapter row (Sprint 7 : checkbox + ratio €/m² + badge mode) -->
+          <tr class="row-chapter" data-chapter-id="{{ chap_id }}"
+              data-chapter-key="chap:{{ chapter.designation | e }}"
+              data-lot="{{ chap_lot }}">
+            <td colspan="8">
+              <input type="checkbox" class="chapter-check"
+                     title="Inclure / exclure tout le chapitre"
+                     {% if chapter.is_included %}checked{% endif %}>
+              <span class="chapter-toggle" onclick="toggleChapter(this)">
+                <span class="toggle-icon">▼</span>
+                {{ chapter.designation }}
+                <span class="chapter-lot-badge lot-{{ chap_lot }}">{{ chap_lot }}</span>
+              </span>
+              <span class="ratio-m2" id="chapter-ratio-{{ chap_id }}"
+                    data-ratio-ref="{{ '%.2f' % (chapter.ratio_ref_m2 or 0) }}"
+                    title="Ratio €/m² du chapitre">{% if chapter.ratio_ref_m2 %}{{ '%.0f'|format(chapter.ratio_ref_m2) }} €/m²{% else %}—{% endif %}</span>
+              <span class="chapter-mode-badge {% if chapter.use_macro %}mode-macro{% else %}mode-detail{% endif %}"
+                    id="chapter-mode-{{ chap_id }}"
+                    title="Macro = ratio €/m² prime ; Detail = somme des articles"
+                    onclick="toggleChapterMode('{{ chap_id }}')">
+                {% if chapter.use_macro %}MACRO{% else %}DÉTAIL{% endif %}
+              </span>
+              <span class="chapter-subtotal" id="chapter-sub-{{ chap_id }}">—</span>
+            </td>
+          </tr>
+
+          {% for section in chapter.sections %}
+          <!-- Section row (Sprint 7 : checkbox + ratio section) -->
+          <tr class="row-section" data-chapter-id="{{ chap_id }}"
+              data-section-key="sect:{{ chapter.designation | e }}|{{ section.designation | e }}">
+            <td colspan="8">
+              <input type="checkbox" class="section-check"
+                     title="Inclure / exclure la section"
+                     {% if section.is_included %}checked{% endif %}>
+              {{ section.designation }}
+              <span class="section-ratio" id="section-ratio-{{ chap_id }}-{{ loop.index }}"
+                    data-ratio-ref="{{ '%.2f' % (section.ratio_ref_m2 or 0) }}">{% if section.ratio_ref_m2 %}{{ '%.1f'|format(section.ratio_ref_m2) }} €/m²{% else %}—{% endif %}</span>
+              <span class="section-subtotal" id="section-sub-{{ chap_id }}-{{ loop.index }}"></span>
+            </td>
+          </tr>
+
+          {% for art in section.articles %}
+          <!-- Article row -->
+          <tr class="row-article {% if not art.is_included %}excluded{% endif %}"
+              data-chapter-id="{{ chap_id }}"
+              data-article-id="{{ art.id }}"
+              data-lot="{{ art.lot }}"
+              data-unit="{{ art.unit or 'u' }}"
+              data-ratio-type="{{ art.ratio_type }}">
+
+            <!-- Checkbox -->
+            <td style="text-align:center">
+              <input type="checkbox" class="line-check"
+                     {% if art.is_included %}checked{% endif %}>
+            </td>
+
+            <!-- Désignation -->
+            <td class="cell-desig" title="{{ art.designation }}">
+              {{ art.designation }}
+              {% if art.ratio_type == 'SURFACIQUE' %}
+              <span style="font-size:10px;color:var(--text-muted);margin-left:4px"
+                    title="Prix total pour l'ensemble de la surface">∑</span>
+              {% endif %}
+            </td>
+
+            <!-- Unité (éditable Sprint 7) -->
+            <td class="col-unit">
+              <input type="text"
+                     class="input-unit"
+                     value="{{ art.unit or 'u' }}"
+                     maxlength="6"
+                     data-source="{{ art.get('unit_source', 'ratio') }}"
+                     title="Unité (u, ens, ml, m², kWp…)">
+            </td>
+
+            <!-- Quantité (éditable pour TOUTES les lignes — Sprint 7) -->
+            <td class="col-qty">
+              <input type="number"
+                     class="input-qty {% if art.get('quantity_source') == 'manual' %}input-manual{% endif %}"
+                     value="{{ '%.2f' | format(art.qty or 0) }}"
+                     min="0" step="0.1"
+                     data-source="{{ art.get('quantity_source', 'ratio') }}">
+            </td>
+
+            <!-- PU HT -->
+            <td class="col-pu">
+              <input type="number"
+                     class="input-pu {% if art.get('unit_price_source') == 'manual' %}input-manual{% endif %}"
+                     value="{{ '%.2f' | format(art.unit_price or 0) }}"
+                     min="0" step="0.01"
+                     data-source="{{ art.get('unit_price_source', 'ratio') }}">
+            </td>
+
+            <!-- Total HT -->
+            <td class="col-total cell-total">
+              {% set t = (art.qty or 0) * (art.unit_price or 0) %}
+              {{ t | eur if t > 0 else '—' }}
+            </td>
+
+            <!-- Déviance -->
+            <td class="col-dev">
+              {% if art.avg_pu_actualise and art.avg_pu_actualise > 0 and art.unit_price %}
+                {% set dev = ((art.unit_price - art.avg_pu_actualise) / art.avg_pu_actualise) %}
+                {% if dev | abs <= 0.20 %}
+                  <span class="dev-badge dev-ok">{{ dev | pct }}</span>
+                {% elif dev | abs <= 0.40 %}
+                  <span class="dev-badge dev-warn">{{ dev | pct }}</span>
+                {% else %}
+                  <span class="dev-badge dev-alert">{{ dev | pct }}</span>
+                {% endif %}
+              {% else %}
+                <span class="dev-badge dev-neutral">—</span>
+              {% endif %}
+            </td>
+
+            <!-- Fiabilité -->
+            <td class="col-fiab">
+              <span class="fiab-badge fiab-{{ art.fiabilite }}"
+                    title="{% if art.nb_refs == 0 %}Aucune référence disponible
+                           {% elif art.nb_refs == 1 %}1 seul devis source — à confirmer
+                           {% elif art.nb_refs < 3 %}{{ art.nb_refs }} références
+                           {% else %}{{ art.nb_refs }} références{% endif %}">
+                {% if art.fiabilite == 'OK' %}✓ {{ art.nb_refs }}
+                {% elif art.fiabilite == 'PRUDENCE' %}⚠ {{ art.nb_refs }}
+                {% elif art.fiabilite == 'SOURCE_UNIQUE' %}⚠ 1
+                {% else %}—{% endif %}
+              </span>
+            </td>
+
+          </tr>
+          {% endfor %}{# articles #}
+          {% endfor %}{# sections #}
+        {% endfor %}{# chapters #}
+
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Popup correction d'anomalie -->
+<div class="correction-popup" id="correction-popup">
+  <h4>📊 Écart de prix détecté</h4>
+  <p>
+    Ratio de référence : <strong id="popup-ratio-ref">—</strong><br>
+    Votre saisie : <strong id="popup-new-val">—</strong><br>
+    Écart : <strong id="popup-deviation" style="color:var(--orange)">—</strong>
+  </p>
+  <div class="form-group" style="margin-bottom:10px">
+    <label style="text-transform:none;font-size:11px">Raison (optionnel)</label>
+    <input type="text" id="popup-raison" class="form-control"
+           placeholder="ex: Marché tendu, spécificité technique…">
+  </div>
+  <div class="correction-actions">
+    <button class="btn btn-sm btn-secondary" onclick="applySpecifique()">
+      🏷 Spécificité affaire
+    </button>
+    <button class="btn btn-sm btn-primary" onclick="applyBase()">
+      🗄 Corriger la base
+    </button>
+    <button class="btn btn-sm" onclick="closeCorrectionPopup()"
+            style="color:var(--text-muted)">Ignorer</button>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/affaire.js') }}"></script>
+{% endblock %}

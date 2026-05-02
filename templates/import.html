@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% block title %}Import Devis{% endblock %}
+
+{% block topbar %}
+<div class="topbar">
+  <span class="topbar-title">Import Devis</span>
+  <span class="topbar-sub">Alimenter la base de ratios</span>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="content" style="max-width:960px">
+
+  <!-- Upload form -->
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-header">
+      <span class="card-title">📂 Importer un nouveau devis</span>
+    </div>
+
+    <form method="POST" action="{{ url_for('import_upload') }}" enctype="multipart/form-data" id="import-form">
+
+      <!-- Zone de dépôt -->
+      <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
+        <div class="upload-icon">📊</div>
+        <p><strong>Glissez votre fichier Excel ici</strong></p>
+        <p style="font-size:12px;margin-top:4px">ou cliquez pour sélectionner — .xlsx / .xls</p>
+        <p id="file-name" style="margin-top:10px;font-size:13px;color:var(--accent);display:none"></p>
+        <input type="file" id="file-input" name="file"
+               accept=".xlsx,.xls,.csv" required
+               onchange="onFileSelect(this)">
+      </div>
+
+      <!-- Métadonnées projet -->
+      <div class="form-grid" style="margin-top:20px">
+        <div class="form-group" style="grid-column:span 2">
+          <label>Nom du projet *</label>
+          <input type="text" name="name" id="import-name" class="form-control"
+                 placeholder="ex: Hôpital Saint-André — Rénovation Blocs" required>
+        </div>
+        <div class="form-group">
+          <label>Date du devis *</label>
+          <input type="date" name="devis_date" class="form-control"
+                 value="{{ today }}" required>
+        </div>
+        <div class="form-group">
+          <label>Surface SDO (m²) *</label>
+          <input type="number" name="sdo" class="form-control"
+                 value="1000" min="100" step="50" required>
+        </div>
+        <div class="form-group">
+          <label>Type de bâtiment</label>
+          <select name="category_id" class="form-control">
+            <option value="1">Hospitalier</option>
+            {% for cat in categories %}
+            <option value="{{ cat.id }}">{{ cat.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Cellule Total HT</label>
+          <input type="text" name="total_ht_cell" class="form-control"
+                 placeholder="ex: F251 ou 10270217.6" style="font-family:monospace">
+          <span class="form-hint">Référence de cellule Excel (F251) ou montant HT saisi directement</span>
+        </div>
+      </div>
+
+      <!-- Complexité par lot -->
+      <div style="margin-top:20px;padding:16px;background:var(--bg-base);border-radius:6px;
+                  border:1px solid var(--border)">
+        <div style="font-size:12px;font-weight:700;color:var(--text-secondary);
+                    text-transform:uppercase;letter-spacing:.05em;margin-bottom:14px">
+          Curseur de Complexité — Pondération dans la base globale
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px">
+
+          <div>
+            <div style="font-size:12px;font-weight:700;color:var(--lot-cfo);margin-bottom:8px">
+              ⚡ CFO
+            </div>
+            <input type="range" name="coef_cfo" class="complexity-slider"
+                   min="0.7" max="1.5" step="0.1" value="1.0"
+                   oninput="this.nextElementSibling.querySelectorAll('span')[1].textContent='×'+parseFloat(this.value).toFixed(1)">
+            <div class="slider-labels">
+              <span>×0.7</span>
+              <span style="color:var(--lot-cfo);font-weight:700">×1.0</span>
+              <span>×1.5</span>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:12px;font-weight:700;color:var(--lot-cfa);margin-bottom:8px">
+              📡 CFA / SSI
+            </div>
+            <input type="range" name="coef_cfa" class="complexity-slider"
+                   min="0.7" max="1.5" step="0.1" value="1.0"
+                   oninput="this.nextElementSibling.querySelectorAll('span')[1].textContent='×'+parseFloat(this.value).toFixed(1)">
+            <div class="slider-labels">
+              <span>×0.7</span>
+              <span style="color:var(--lot-cfa);font-weight:700">×1.0</span>
+              <span>×1.5</span>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:12px;font-weight:700;color:var(--lot-pv);margin-bottom:8px">
+              ☀️ PV
+            </div>
+            <input type="range" name="coef_pv" class="complexity-slider"
+                   min="0.7" max="1.5" step="0.1" value="1.0"
+                   oninput="this.nextElementSibling.querySelectorAll('span')[1].textContent='×'+parseFloat(this.value).toFixed(1)">
+            <div class="slider-labels">
+              <span>×0.7</span>
+              <span style="color:var(--lot-pv);font-weight:700">×1.0</span>
+              <span>×1.5</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px">
+        <button type="submit" class="btn btn-primary btn-lg" id="import-btn">
+          📥 Lancer l'import
+        </button>
+      </div>
+
+    </form>
+  </div>
+
+  <!-- Liste des projets existants -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">📚 Projets en base ({{ projects|length }})</span>
+      <span style="font-size:12px;color:var(--text-muted)">
+        Source des ratios de référence
+      </span>
+    </div>
+
+    {% if projects %}
+    <div>
+      <div class="project-row project-row-header">
+        <span>Projet</span>
+        <span>Date</span>
+        <span>Total HT</span>
+        <span>SDO m²</span>
+        <span>Mappé</span>
+        <span>Pending</span>
+        <span>Actions</span>
+      </div>
+      {% for p in projects %}
+      <div class="project-row">
+        <div>
+          <div style="font-weight:600">{{ p.name }}</div>
+          <div style="font-size:11px;color:var(--text-muted)">
+            {{ p.category_name or '—' }}
+            {% if p.import_ok %}
+            <span style="color:var(--green)">● Assertion OK</span>
+            {% else %}
+            <span style="color:var(--orange)">⚠ Non vérifié</span>
+            {% endif %}
+          </div>
+        </div>
+        <span style="color:var(--text-secondary)">{{ p.devis_date }}</span>
+        <span style="font-weight:600;color:var(--accent)">
+          {{ p.total_ht_source | eur if p.total_ht_source else '—' }}
+        </span>
+        <span>{{ p.surface_sdo | int }} m²</span>
+        <span style="color:var(--green)">{{ p.nb_mapped }}</span>
+        <span style="color:{% if p.nb_pending > 0 %}var(--orange){% else %}var(--text-muted){% endif %}">
+          {{ p.nb_pending }}
+        </span>
+        <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <a href="{{ url_for('mapping_page', project_id=p.id) }}"
+             class="btn btn-sm btn-secondary" title="Ouvrir le mapping manuel">
+            {% if p.nb_pending > 0 %}
+            🗺 Mapper ({{ p.nb_pending }})
+            {% else %}
+            🗺 Voir mapping
+            {% endif %}
+          </a>
+          <button class="btn btn-sm btn-danger" onclick="deleteProject({{ p.id }}, '{{ p.name|e }}')"
+                  title="Supprimer ce projet et toutes ses lignes">
+            🗑
+          </button>
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:30px">
+      <p>Aucun projet importé — importez votre premier devis ci-dessus.</p>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+
+<script>
+function onFileSelect(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    const nameEl = document.getElementById('file-name');
+    nameEl.textContent = '📎 ' + file.name;
+    nameEl.style.display = 'block';
+
+    // Pré-remplir le nom du projet avec le nom du fichier
+    const nameInput = document.getElementById('import-name');
+    if (!nameInput.value) {
+        nameInput.value = file.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+    }
+}
+
+// Drag & drop
+const zone = document.getElementById('upload-zone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file) {
+        document.getElementById('file-input').files = e.dataTransfer.files;
+        onFileSelect(document.getElementById('file-input'));
+    }
+});
+
+// Feedback au submit
+document.getElementById('import-form').addEventListener('submit', () => {
+    const btn = document.getElementById('import-btn');
+    btn.textContent = '⏳ Import en cours…';
+    btn.disabled = true;
+});
+
+// Suppression d'un projet (fonctionne même si mapping en cours)
+function deleteProject(projectId, projectName) {
+    if (!confirm(`Supprimer définitivement le projet "${projectName}" et toutes ses lignes de devis ?\n\nCette action est irréversible.`)) {
+        return;
+    }
+    fetch(`/api/project/${projectId}/delete`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === 'ok') {
+                window.location.reload();
+            } else {
+                alert('Erreur : ' + (data.message || 'Suppression impossible'));
+            }
+        })
+        .catch(err => alert('Erreur réseau : ' + err));
+}
+</script>
+{% endblock %}

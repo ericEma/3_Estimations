@@ -1,0 +1,324 @@
+{% extends "base.html" %}
+{% block title %}{% if edit_mode %}Modifier — {{ affaire.name }}{% else %}Nouvelle Affaire{% endif %}{% endblock %}
+
+{% block topbar %}
+<div class="topbar">
+  <div>
+    {% if edit_mode %}
+    <a href="{{ url_for('affaire_view', affaire_id=affaire.id) }}" style="color:var(--text-muted);font-size:13px">← Retour au calculateur</a>
+    <span class="topbar-title" style="margin-left:12px">Modifier la fiche</span>
+    {% else %}
+    <a href="{{ url_for('index') }}" style="color:var(--text-muted);font-size:13px">← Affaires</a>
+    <span class="topbar-title" style="margin-left:12px">Nouvelle Affaire</span>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="content" style="max-width:860px">
+
+  <div class="page-header">
+    <div>
+      <div class="page-title">{% if edit_mode %}Modifier la fiche affaire{% else %}Créer une Affaire{% endif %}</div>
+      <div class="page-subtitle">Configurez les paramètres de votre chiffrage</div>
+    </div>
+  </div>
+
+  <form method="POST" action="{% if edit_mode %}{{ url_for('affaire_edit', affaire_id=affaire.id) }}{% else %}{{ url_for('affaire_new') }}{% endif %}">
+
+    <!-- Identification -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><span class="card-title">📋 Identification</span></div>
+      <div class="form-grid">
+        <div class="form-group" style="grid-column:span 2">
+          <label>Nom de l'affaire *</label>
+          <input type="text" name="name" class="form-control" placeholder="ex: CHU Bordeaux — Rénovation Bloc B"
+                 required autofocus value="{{ affaire.name if edit_mode else '' }}">
+        </div>
+        <div class="form-group">
+          <label>Client / Maître d'ouvrage</label>
+          <input type="text" name="client" class="form-control" placeholder="ex: CHU Bordeaux"
+                 value="{{ affaire.client if edit_mode else '' }}">
+        </div>
+        <div class="form-group">
+          <label>Adresse / Localisation</label>
+          <input type="text" name="adresse" class="form-control" placeholder="ex: Bordeaux (33)"
+                 value="{{ affaire.adresse if edit_mode else '' }}">
+        </div>
+        <div class="form-group">
+          <label>Type de bâtiment</label>
+          <select name="category_id" class="form-control">
+            <option value="">— Sélectionner —</option>
+            {% for cat in categories %}
+            <option value="{{ cat.id }}"
+                    {% if edit_mode and affaire.category_id == cat.id %}selected{% endif %}>{{ cat.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Notes</label>
+          <input type="text" name="notes" class="form-control" placeholder="Remarques libres"
+                 value="{{ affaire.notes if edit_mode else '' }}">
+        </div>
+      </div>
+    </div>
+
+    <!-- Surfaces & Puissance -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><span class="card-title">📐 Surfaces & Puissance</span></div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Surface SDO (m²) *</label>
+          <input type="number" name="surface_sdo" class="form-control"
+                 value="{{ affaire.surface_sdo | int if edit_mode else 1000 }}"
+                 min="100" step="50" required
+                 oninput="updateDensityPreview(this.value)">
+          <span class="form-hint">Surface de plancher utile — base de tous les ratios</span>
+        </div>
+        <div class="form-group">
+          <label>Puissance souscrite (kVA)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" name="kva_cible" class="form-control"
+                   value="{{ affaire.kva_cible | int if edit_mode else 800 }}"
+                   min="50" max="5000" step="50" style="width:100px">
+            <span style="color:var(--text-muted);font-size:13px">kVA</span>
+          </div>
+          <span class="form-hint">Puissance TGBT estimée</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Provisions -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header">
+        <span class="card-title">📊 Provisions & Phase d'étude</span>
+        <span style="font-size:12px;color:var(--text-muted)">
+          Les 3 taxes sont indépendantes et cumulatives sur le Total HT
+        </span>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Phase d'étude</label>
+          <select name="phase_etude" class="form-control" id="select-phase"
+                  onchange="applyPhasePreset(this.value)">
+            {% for ph, label in [('DIAG','DIAG — Diagnostic (6%)'),('APS','APS — Avant-Projet Sommaire (4%)'),('APD','APD — Avant-Projet Détaillé (3%)'),('PRO','PRO — Projet (1%)')] %}
+            <option value="{{ ph }}" {% if (affaire.phase_etude if edit_mode else 'APD') == ph %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <span class="form-hint">Preset paliers Egis — modifiable ci-contre</span>
+        </div>
+        <div class="form-group">
+          <label>Taux Phase (%)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" name="taux_phase" id="input-taux-phase"
+                   class="form-control"
+                   value="{{ '%.1f'|format(affaire.taux_phase) if edit_mode else 3 }}"
+                   min="0" max="20" step="0.5" style="width:80px">
+            <span style="color:var(--text-muted);font-size:13px">%</span>
+          </div>
+          <span class="form-hint">Provision liée à l'avancement (paliers Egis)</span>
+        </div>
+        <div class="form-group">
+          <label>Taux Incertitude (%)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" name="taux_incertitude" id="input-incertitude"
+                   class="form-control"
+                   value="{{ '%.1f'|format(affaire.taux_incertitude) if edit_mode else 3 }}"
+                   min="0" max="50" step="0.5" style="width:80px">
+            <span style="color:var(--text-muted);font-size:13px">%</span>
+          </div>
+          <span class="form-hint">Indépendant de la phase</span>
+        </div>
+        <div class="form-group">
+          <label>Taux Risque / Aléa (%)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" name="coef_risque" class="form-control"
+                   value="{{ '%.1f'|format(affaire.coef_risque) if edit_mode else 1 }}"
+                   min="0" max="30" step="0.5" style="width:80px">
+            <span style="color:var(--text-muted);font-size:13px">%</span>
+          </div>
+          <span class="form-hint">Provision aléas spécifiques (0–30%)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Complexité par lot -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header">
+        <span class="card-title">⚙️ Complexité par Lot</span>
+        <span style="font-size:12px;color:var(--text-muted)">
+          Pondère les ratios de référence pour ce projet spécifique
+        </span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px">
+
+        <!-- CFO -->
+        <div>
+          <div style="font-size:13px;font-weight:700;color:var(--lot-cfo);margin-bottom:10px">
+            ⚡ CFO — Courants Forts
+          </div>
+          <input type="range" name="coef_complexity_cfo" class="complexity-slider"
+                 min="0.7" max="1.5" step="0.1"
+                 value="{{ affaire.coef_complexity_cfo if edit_mode else 1.0 }}"
+                 oninput="updateSliderLabel('cfo', this.value)">
+          <div class="slider-labels">
+            <span>Simple (×0.7)</span>
+            <span id="label-cfo" style="color:var(--lot-cfo);font-weight:700">×1.0</span>
+            <span>Complexe (×1.5)</span>
+          </div>
+          <div style="margin-top:8px;font-size:12px;color:var(--text-muted)" id="hint-cfo">
+            Complexité standard hospitalier
+          </div>
+        </div>
+
+        <!-- CFA -->
+        <div>
+          <div style="font-size:13px;font-weight:700;color:var(--lot-cfa);margin-bottom:10px">
+            📡 CFA — Courants Faibles / SSI
+          </div>
+          <input type="range" name="coef_complexity_cfa" class="complexity-slider"
+                 min="0.7" max="1.5" step="0.1"
+                 value="{{ affaire.coef_complexity_cfa if edit_mode else 1.0 }}"
+                 oninput="updateSliderLabel('cfa', this.value)">
+          <div class="slider-labels">
+            <span>Simple</span>
+            <span id="label-cfa" style="color:var(--lot-cfa);font-weight:700">×1.0</span>
+            <span>Complexe</span>
+          </div>
+          <div style="margin-top:8px;font-size:12px;color:var(--text-muted)" id="hint-cfa">
+            Complexité standard hospitalier
+          </div>
+        </div>
+
+        <!-- PV -->
+        <div>
+          <div style="font-size:13px;font-weight:700;color:var(--lot-pv);margin-bottom:10px">
+            ☀️ PV — Photovoltaïque
+          </div>
+          <input type="range" name="coef_complexity_pv" class="complexity-slider"
+                 min="0.7" max="1.5" step="0.1"
+                 value="{{ affaire.coef_complexity_pv if edit_mode else 1.0 }}"
+                 oninput="updateSliderLabel('pv', this.value)">
+          <div class="slider-labels">
+            <span>Simple</span>
+            <span id="label-pv" style="color:var(--lot-pv);font-weight:700">×1.0</span>
+            <span>Complexe</span>
+          </div>
+          <div style="margin-top:8px;font-size:12px;color:var(--text-muted)" id="hint-pv">
+            Standard
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Prévisualisation ratio m² -->
+      <div style="margin-top:20px;padding:12px 16px;background:var(--bg-base);border-radius:6px;
+                  border:1px solid var(--border)">
+        <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;
+                    letter-spacing:.05em;margin-bottom:6px">Estimation prévisionnelle CFO/CFA/PV</div>
+        <div id="preview-m2" style="font-size:18px;font-weight:700;color:var(--accent)">—</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+          Basée sur la base de prix mise à jour le {{ maj_date_bdd or '—' }}
+        </div>
+      </div>
+
+    </div>
+
+    <div style="display:flex;gap:12px;justify-content:flex-end">
+      <a href="{% if edit_mode %}{{ url_for('affaire_view', affaire_id=affaire.id) }}{% else %}{{ url_for('index') }}{% endif %}"
+         class="btn btn-secondary">Annuler</a>
+      <button type="submit" id="btn-create" class="btn btn-primary btn-lg">
+        {% if edit_mode %}💾 Enregistrer les modifications{% else %}⚡ Créer et ouvrir le calculateur{% endif %}
+      </button>
+    </div>
+
+  </form>
+</div>
+
+<!-- Overlay de chargement : affiché pendant l'injection des 285 lignes -->
+<div id="loading-overlay" style="display:none;position:fixed;inset:0;
+     background:rgba(9,33,44,.92);z-index:9999;
+     flex-direction:column;align-items:center;justify-content:center;gap:20px">
+  <div style="font-size:22px;font-weight:800;color:var(--accent)">Création en cours…</div>
+  <div style="font-size:13px;color:var(--text2)">Injection des 285 lignes DPGF avec ratios PSA</div>
+  <div style="width:320px;height:8px;background:var(--bg3);border-radius:4px;overflow:hidden">
+    <div id="progress-bar" style="height:100%;width:0%;background:var(--accent);
+         border-radius:4px;transition:width .25s ease"></div>
+  </div>
+  <div id="progress-label" style="font-size:12px;color:var(--text-muted)">0%</div>
+</div>
+
+<script>
+// Ratios €/m² de référence (complexité 1.0) par lot, injectés depuis la BDD
+const RATIO_M2_BASE = {
+    cfo: {{ ratio_m2_cfo or 113.13 }},
+    cfa: {{ ratio_m2_cfa or 0 }},
+    pv:  {{ ratio_m2_pv  or 0 }},
+};
+
+// Paliers Egis — taux Phase indépendant
+const PHASE_PRESETS_NEW = { DIAG: 6, APS: 4, APD: 3, PRO: 1 };
+
+function applyPhasePreset(phase) {
+    const preset = PHASE_PRESETS_NEW[phase] ?? 3;
+    document.getElementById('input-taux-phase').value = preset;
+}
+
+function updateSliderLabel(lot, val) {
+    const v = parseFloat(val);
+    document.getElementById(`label-${lot}`).textContent = `×${v.toFixed(1)}`;
+
+    const hints = {
+        '0.7': 'Projet simple, faible équipement',
+        '0.8': 'Réhabilitation légère',
+        '0.9': 'Légèrement en dessous du standard',
+        '1.0': 'Complexité standard hospitalier',
+        '1.1': 'Équipements spécifiques',
+        '1.2': 'Blocs opératoires / Réa',
+        '1.3': 'Très haute technicité',
+        '1.4': 'Projet exceptionnel',
+        '1.5': 'Complexité maximale',
+    };
+    const key = v.toFixed(1);
+    document.getElementById(`hint-${lot}`).textContent = hints[key] || '';
+
+    updatePreview();
+}
+
+function updatePreview() {
+    const sdo   = parseFloat(document.querySelector('[name=surface_sdo]').value) || 1000;
+    const ccfo  = parseFloat(document.querySelector('[name=coef_complexity_cfo]').value) || 1.0;
+    const ccfa  = parseFloat(document.querySelector('[name=coef_complexity_cfa]').value) || 1.0;
+    const cpv   = parseFloat(document.querySelector('[name=coef_complexity_pv]').value)  || 1.0;
+    const total = (RATIO_M2_BASE.cfo * ccfo + RATIO_M2_BASE.cfa * ccfa + RATIO_M2_BASE.pv * cpv) * sdo;
+    document.getElementById('preview-m2').textContent =
+        new Intl.NumberFormat('fr-FR', {style:'currency',currency:'EUR',maximumFractionDigits:0}).format(total);
+}
+
+function updateDensityPreview(val) { updatePreview(); }
+
+updatePreview();
+
+// Overlay de progression au submit
+document.querySelector('form').addEventListener('submit', function() {
+    const overlay = document.getElementById('loading-overlay');
+    overlay.style.display = 'flex';
+    document.getElementById('btn-create').disabled = true;
+
+    let progress = 0;
+    const bar   = document.getElementById('progress-bar');
+    const label = document.getElementById('progress-label');
+
+    const timer = setInterval(() => {
+        // Progression rapide au début, ralentit vers 90%
+        const step = progress < 60 ? 8 : progress < 80 ? 4 : 1;
+        progress = Math.min(progress + step, 90);
+        bar.style.width   = progress + '%';
+        label.textContent = progress + '%';
+        if (progress >= 90) clearInterval(timer);
+    }, 200);
+});
+</script>
+{% endblock %}

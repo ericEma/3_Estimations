@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Estimation Élec{% endblock %} — Egis Branche Sud</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <style>
+    .sidebar-logo { cursor: pointer; transition: opacity .15s; }
+    .sidebar-logo:hover { opacity: .85; }
+    .nav-dashboard {
+      background: rgba(213,243,17,.08);
+      border: 1px solid rgba(213,243,17,.2);
+      border-radius: 6px;
+      margin-bottom: 4px;
+      color: var(--accent) !important;
+      font-weight: 700;
+    }
+    .nav-dashboard:hover, .nav-dashboard.active {
+      background: rgba(213,243,17,.15) !important;
+      border-color: var(--accent) !important;
+    }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+<div class="layout">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────── -->
+  <nav class="sidebar">
+    <a href="{{ url_for('index') }}" class="sidebar-logo" style="text-decoration:none;display:block">
+      <div class="logo-icon">⚡</div>
+      <h1>Estimation Élec</h1>
+      <span>Egis Branche Sud</span>
+    </a>
+
+    <div class="sidebar-nav">
+      <a href="{{ url_for('index') }}"
+         class="nav-link nav-dashboard {% if request.endpoint == 'index' %}active{% endif %}"
+         title="Retour au tableau de bord">
+        <span class="nav-icon">🏠</span>
+        <span>Dashboard</span>
+      </a>
+      <div class="nav-section-label" style="margin-top:12px">Navigation</div>
+      <a href="{{ url_for('index') }}"
+         class="nav-link {% if request.endpoint == 'index' %}active{% endif %}">
+        <span class="nav-icon">📋</span>
+        <span>Affaires</span>
+      </a>
+      <a href="{{ url_for('affaire_new') }}"
+         class="nav-link {% if request.endpoint == 'affaire_new' %}active{% endif %}">
+        <span class="nav-icon">➕</span>
+        <span>Nouvelle affaire</span>
+      </a>
+
+      <div class="nav-section-label" style="margin-top:16px">Données</div>
+      <a href="{{ url_for('import_page') }}"
+         class="nav-link {% if request.endpoint in ['import_page','import_upload'] %}active{% endif %}">
+        <span class="nav-icon">📂</span>
+        <span>Import Devis</span>
+      </a>
+      <a href="/bibliotheque" class="nav-link {% if request.endpoint == 'bibliotheque' %}active{% endif %}">
+        <span class="nav-icon">📖</span>
+        <span>Bibliothèque DPGF</span>
+      </a>
+      <a href="/ratios" class="nav-link">
+        <span class="nav-icon">📊</span>
+        <span>Référentiel Ratios</span>
+      </a>
+    </div>
+
+    <div class="sidebar-footer">
+      <div>Base : PSA Urgences</div>
+      <div style="color:#3fb950;margin-top:2px">● 1 projet actif</div>
+      <button id="btn-quit-app"
+              type="button"
+              style="margin-top:12px;width:100%;padding:8px;
+                     background:#3a1818;color:#ff6b6b;
+                     border:1px solid #5a2828;border-radius:4px;
+                     cursor:pointer;font-size:12px;font-weight:600;"
+              title="Ferme le serveur local et termine l'application">
+        ⏻ Quitter l'application
+      </button>
+    </div>
+  </nav>
+
+  <!-- ── Main ──────────────────────────────────────────────────── -->
+  <div class="main">
+    {% block topbar %}{% endblock %}
+    {% block content %}{% endblock %}
+  </div>
+
+</div>
+
+<!-- Flash notifications -->
+<div class="flash-container" id="flash-container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+</div>
+
+{% block scripts %}{% endblock %}
+
+<!-- ─── Heartbeat & fermeture auto du serveur ──────────────────────────── -->
+<script>
+(function() {
+  'use strict';
+
+  // ─── 1. Heartbeat : ping serveur toutes les 3 s ────────────────────
+  //      Permet au serveur de détecter que le navigateur est toujours là.
+  //      Si plus de ping pendant 15 s, le serveur s'arrête tout seul.
+  const HEARTBEAT_INTERVAL_MS = 3000;
+
+  function sendHeartbeat() {
+    fetch('/api/heartbeat', { method: 'POST', keepalive: true })
+      .catch(() => { /* silencieux - le watchdog serveur gère */ });
+  }
+
+  // Premier ping immédiat + toutes les 3 s
+  sendHeartbeat();
+  setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+
+  // ─── 2. Fermeture d'onglet → watchdog serveur (pas de sendBeacon) ──
+  //      IMPORTANT : ne PAS envoyer /api/shutdown sur beforeunload.
+  //      beforeunload se déclenche à chaque navigation interne (clic lien),
+  //      ce qui tuerait le serveur entre deux pages et produirait des
+  //      erreurs type "cannot GET /affaire/11".
+  //      Le watchdog serveur arrête Flask tout seul 15 s après le dernier
+  //      heartbeat, ce qui couvre le cas "onglet fermé".
+
+  // ─── 3. Bouton "Quitter l'application" ────────────────────────────
+  const btnQuit = document.getElementById('btn-quit-app');
+  if (btnQuit) {
+    btnQuit.addEventListener('click', function() {
+      if (!confirm("Quitter l'application ?\n\nLe serveur local sera arrêté.")) {
+        return;
+      }
+      // On retire le beforeunload pour éviter le double signal
+      window.onbeforeunload = null;
+      fetch('/api/shutdown', { method: 'POST' })
+        .catch(() => {})
+        .finally(() => {
+          document.body.innerHTML =
+            '<div style="display:flex;align-items:center;justify-content:center;' +
+            'height:100vh;font-family:sans-serif;background:#1a1a1a;color:#eee;' +
+            'text-align:center;flex-direction:column;gap:16px;">' +
+            '<div style="font-size:48px;">⏻</div>' +
+            '<h2 style="margin:0;">Application fermée</h2>' +
+            '<p style="color:#888;">Vous pouvez fermer cet onglet.</p>' +
+            '</div>';
+        });
+    });
+  }
+})();
+</script>
+</body>
+</html>

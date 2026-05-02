@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}Affaires{% endblock %}
+
+{% block topbar %}
+<div class="topbar">
+  <div>
+    <span class="topbar-title">Mes Affaires</span>
+    <span class="topbar-sub">{{ affaires|length }} affaire{% if affaires|length != 1 %}s{% endif %}</span>
+  </div>
+  <div class="topbar-actions">
+    <a href="{{ url_for('affaire_new') }}" class="btn btn-primary">
+      ➕ Nouvelle affaire
+    </a>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="content">
+
+  {% if affaires %}
+  <div class="affaires-grid">
+    {% for a in affaires %}
+    <div class="affaire-card" onclick="location.href='{{ url_for('affaire_view', affaire_id=a.id) }}'">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+        <span class="status-badge status-{{ a.statut }}">{{ a.statut|title }}</span>
+        <button class="btn btn-sm btn-danger"
+                onclick="event.stopPropagation(); deleteAffaire({{ a.id }}, '{{ a.name }}')"
+                style="opacity:.5" title="Supprimer">✕</button>
+      </div>
+
+      <div class="affaire-card-title">{{ a.name }}</div>
+
+      <div class="affaire-card-meta">
+        {% if a.client %}<span>📋 {{ a.client }}</span>{% endif %}
+        <span>📐 {{ a.surface_sdo|int }} m²</span>
+        {% if a.category_name %}<span>🏥 {{ a.category_name }}</span>{% endif %}
+        <span>📅 {{ a.date_creation }}</span>
+      </div>
+
+      <div class="affaire-card-total">
+        {% if a.total_ht and a.total_ht > 0 %}
+          {{ a.total_ht | eur }}
+        {% else %}
+          <span style="color:var(--text-muted);font-size:14px">Non calculé</span>
+        {% endif %}
+      </div>
+
+      {% if a.total_ht and a.surface_sdo %}
+      <div class="affaire-card-sdo">
+        {{ (a.total_ht / a.surface_sdo) | eur }}/m² · SDO {{ a.surface_sdo|int }} m²
+      </div>
+      {% endif %}
+
+      <div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">
+        <span style="font-size:11px;color:var(--lot-cfo)">CFO ×{{ a.coef_complexity_cfo }}</span>
+        <span style="font-size:11px;color:var(--lot-cfa)">CFA ×{{ a.coef_complexity_cfa }}</span>
+        {% if a.coef_complexity_pv != 1.0 %}
+        <span style="font-size:11px;color:var(--lot-pv)">PV ×{{ a.coef_complexity_pv }}</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+
+    <!-- Card "Nouvelle affaire" -->
+    <a href="{{ url_for('affaire_new') }}"
+       style="display:flex;flex-direction:column;align-items:center;justify-content:center;
+              border:2px dashed var(--border);border-radius:10px;padding:32px;
+              color:var(--text-muted);text-decoration:none;transition:all .15s"
+       onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
+       onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-muted)'">
+      <div style="font-size:32px;margin-bottom:8px">➕</div>
+      <div style="font-size:13px;font-weight:600">Nouvelle affaire</div>
+    </a>
+  </div>
+
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-icon">⚡</div>
+    <h3>Aucune affaire</h3>
+    <p>Créez votre première affaire pour commencer à chiffrer.</p>
+    <div style="margin-top:20px">
+      <a href="{{ url_for('affaire_new') }}" class="btn btn-primary btn-lg">
+        ➕ Créer une affaire
+      </a>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+
+<script>
+function deleteAffaire(id, name) {
+    if (!confirm(`Supprimer l'affaire "${name}" ?`)) return;
+    fetch(`/api/affaire/${id}/delete`, { method: 'POST' })
+        .then(r => r.json())
+        .then(() => location.reload());
+}
+</script>
+{% endblock %}

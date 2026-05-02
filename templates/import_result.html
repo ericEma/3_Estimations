@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Résultat Import{% endblock %}
+
+{% block topbar %}
+<div class="topbar">
+  <div style="display:flex;align-items:center;gap:12px">
+    <a href="{{ url_for('import_page') }}" style="color:var(--text-muted);font-size:13px">← Import</a>
+    <span class="topbar-title">Résultat de l'import</span>
+    <span class="topbar-sub">{{ filename }}</span>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="content" style="max-width:860px">
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      {% if success %}
+      <div style="width:48px;height:48px;background:var(--green-bg);border-radius:50%;
+                  display:flex;align-items:center;justify-content:center;font-size:24px">✅</div>
+      <div>
+        <div style="font-size:17px;font-weight:700;color:var(--green)">Import réussi</div>
+        <div style="font-size:13px;color:var(--text-muted)">{{ name }}</div>
+      </div>
+      {% else %}
+      <div style="width:48px;height:48px;background:var(--red-bg);border-radius:50%;
+                  display:flex;align-items:center;justify-content:center;font-size:24px">❌</div>
+      <div>
+        <div style="font-size:17px;font-weight:700;color:var(--red)">Erreur d'import</div>
+        <div style="font-size:13px;color:var(--text-muted)">{{ name }}</div>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Log output -->
+    <div style="background:var(--bg-base);border:1px solid var(--border);border-radius:6px;
+                padding:16px;font-family:monospace;font-size:12px;line-height:1.6;
+                max-height:400px;overflow-y:auto;color:var(--text-secondary);white-space:pre-wrap">{{ output }}</div>
+
+    <div style="display:flex;gap:12px;margin-top:20px">
+      <a href="{{ url_for('import_page') }}" class="btn btn-secondary">← Retour Import</a>
+      {% if success %}
+      <a href="{{ url_for('import_page') }}" class="btn btn-primary" id="go-mapping">
+        🗺 Voir les lignes à mapper
+      </a>
+      {% else %}
+      <button class="btn btn-primary" onclick="history.back()">Réessayer</button>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+{% endblock %}

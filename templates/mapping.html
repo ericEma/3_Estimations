@@ -1,0 +1,335 @@
+{% extends "base.html" %}
+{% block title %}Mapping — {{ project.name }}{% endblock %}
+
+{% block topbar %}
+<div class="topbar">
+  <div style="display:flex;align-items:center;gap:12px">
+    <a href="{{ url_for('import_page') }}" style="color:var(--text-muted);font-size:13px">← Import</a>
+    <span style="color:var(--border)">|</span>
+    <span class="topbar-title">Mapping manuel</span>
+    <span class="topbar-sub">{{ project.name }}</span>
+  </div>
+  <div class="topbar-actions" style="display:flex;gap:8px;align-items:center">
+    <span id="stat-auto"     style="font-size:12px;color:var(--green)">auto: 0</span>
+    <span id="stat-manual"   style="font-size:12px;color:var(--accent2)">manuel: 0</span>
+    <span id="stat-pending"  style="font-size:12px;color:var(--orange)">à traiter: 0</span>
+    <span id="stat-unmapped" style="font-size:12px;color:var(--text-muted)">hors: 0</span>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="content">
+
+  {% if not lines %}
+  <div class="empty-state">
+    <div class="empty-icon">ℹ️</div>
+    <h3>Aucune ligne à mapper</h3>
+    <p>Ce projet ne contient aucune ligne article importée.</p>
+    <div style="margin-top:20px">
+      <a href="{{ url_for('import_page') }}" class="btn btn-primary">← Retour Import</a>
+    </div>
+  </div>
+  {% else %}
+
+  <!-- Barre de filtres -->
+  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+    <span style="font-size:12px;color:var(--text-muted);margin-right:4px">Filtrer :</span>
+    <button class="btn btn-sm btn-secondary filter-btn" data-filter="all">Toutes ({{ lines|length }})</button>
+    <button class="btn btn-sm btn-secondary filter-btn" data-filter="pending">⚠ À traiter</button>
+    <button class="btn btn-sm btn-secondary filter-btn" data-filter="auto">✓ Auto</button>
+    <button class="btn btn-sm btn-secondary filter-btn" data-filter="manual">✎ Manuel</button>
+    <button class="btn btn-sm btn-secondary filter-btn" data-filter="unmapped">✕ Hors périmètre</button>
+    <input type="text" id="search-input" placeholder="Rechercher dans la désignation…"
+           class="form-control" style="max-width:260px;margin-left:auto;font-size:12px">
+  </div>
+
+  <!-- Table de mapping -->
+  <div class="card" style="padding:0;overflow:hidden">
+    <table class="mapping-table" id="mapping-table">
+      <thead>
+        <tr>
+          <th style="width:40px" rowspan="2">#</th>
+          <th style="width:110px" rowspan="2">Statut</th>
+          <th colspan="5" class="col-source-header">📄 Ligne devis source</th>
+          <th rowspan="2">🎯 Article DPGF cible (modifiable)</th>
+          <th style="width:160px" rowspan="2">Actions</th>
+        </tr>
+        <tr>
+          <th class="col-source-sub">Désignation (devis)</th>
+          <th class="col-source-sub" style="width:55px">Unité</th>
+          <th class="col-source-sub" style="width:80px">Qté</th>
+          <th class="col-source-sub" style="width:100px">PU HT</th>
+          <th class="col-source-sub" style="width:110px">Montant HT</th>
+        </tr>
+      </thead>
+      <tbody id="mapping-body">
+        {% for line in lines %}
+        {# Montant HT = Qté × PU du devis source (typage Float) #}
+        {% set src_qty = line.source_quantity|float if line.source_quantity is not none else 0.0 %}
+        {% set src_pu  = line.source_unit_price|float if line.source_unit_price is not none else 0.0 %}
+        {% set src_amount = src_qty * src_pu %}
+        <tr id="row-{{ line.id }}"
+            data-line-id="{{ line.id }}"
+            data-status="{{ line.mapping_status }}"
+            data-designation="{{ (line.source_designation or '')|lower }}"
+            class="status-{{ line.mapping_status }}">
+
+          <td style="color:var(--text-muted);font-size:11px">
+            {{ line.excel_row_num or '—' }}
+          </td>
+
+          <!-- Statut + score -->
+          <td>
+            {% if line.mapping_status == 'auto' %}
+              <span class="badge badge-auto">✓ auto</span>
+              {% if line.mapping_score %}
+              <div style="font-size:10px;color:var(--text-muted);margin-top:2px">
+                score {{ '%.0f'|format(line.mapping_score) }}%
+              </div>
+              {% endif %}
+            {% elif line.mapping_status == 'manual' %}
+              <span class="badge badge-manual">✎ manuel</span>
+            {% elif line.mapping_status == 'unmapped' %}
+              <span class="badge badge-unmapped">✕ hors</span>
+            {% else %}
+              <span class="badge badge-pending">⚠ à traiter</span>
+              {% if line.mapping_score %}
+              <div style="font-size:10px;color:var(--text-muted);margin-top:2px">
+                score {{ '%.0f'|format(line.mapping_score) }}%
+              </div>
+              {% endif %}
+            {% endif %}
+          </td>
+
+          <!-- ═════ Données du DEVIS SOURCE ═════ -->
+          <td class="col-source">
+            <div style="font-weight:500">{{ line.source_designation or '—' }}</div>
+            {% if line.context_path %}
+            <div style="font-size:11px;color:var(--text-muted)">{{ line.context_path }}</div>
+            {% endif %}
+          </td>
+
+          <td class="col-source" style="font-family:monospace;color:var(--text-secondary)">
+            {{ line.source_unit or '—' }}
+          </td>
+
+          <td class="col-source" style="text-align:right;font-variant-numeric:tabular-nums">
+            {% if line.source_quantity is not none %}{{ '%.2f' | format(src_qty) }}{% else %}—{% endif %}
+          </td>
+
+          <td class="col-source" style="text-align:right;font-variant-numeric:tabular-nums">
+            {% if line.source_unit_price %}{{ src_pu | eur }}{% else %}—{% endif %}
+          </td>
+
+          <td class="col-source" style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600">
+            {% if src_amount %}{{ src_amount | eur }}{% else %}—{% endif %}
+          </td>
+
+          <!-- ═════ Cible DPGF (modifiable) ═════ -->
+          <td class="col-target">
+            {% if line.dpgf_designation %}
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">
+              Actuel : <span style="color:var(--accent2)">{{ line.dpgf_designation }}</span>
+            </div>
+            {% endif %}
+            <select class="form-control dpgf-select"
+                    style="font-size:12px;padding:4px 8px"
+                    data-line-id="{{ line.id }}"
+                    data-original="{{ line.dpgf_article_id or '' }}">
+              <option value="">— Sélectionner un article DPGF —</option>
+              {% set current_chapter = namespace(v='') %}
+              {% for art in articles %}
+                {% if art.chapter != current_chapter.v %}
+                  {% if current_chapter.v %}</optgroup>{% endif %}
+                  {% set current_chapter.v = art.chapter %}
+                  <optgroup label="{{ art.chapter }}">
+                {% endif %}
+                <option value="{{ art.id }}"
+                        data-unit="{{ art.unit }}"
+                        data-section="{{ art.section }}"
+                        {% if line.dpgf_article_id == art.id %}selected{% endif %}>
+                  {{ art.designation }}
+                  {% if art.unit %}({{ art.unit }}){% endif %}
+                </option>
+              {% endfor %}
+              {% if articles %}</optgroup>{% endif %}
+            </select>
+          </td>
+
+          <!-- Actions -->
+          <td>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">
+              <button class="btn btn-sm btn-primary" onclick="assignLine({{ line.id }})">
+                ✓ Valider
+              </button>
+              <button class="btn btn-sm btn-secondary"
+                      onclick="markUnmapped({{ line.id }})"
+                      title="Hors périmètre DPGF">
+                ✕
+              </button>
+            </div>
+          </td>
+
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% endif %}
+</div>
+
+<style>
+.badge {
+  display:inline-block;padding:2px 8px;border-radius:10px;
+  font-size:11px;font-weight:600;white-space:nowrap;
+}
+.badge-auto     { background:var(--green-bg);  color:var(--green); }
+.badge-manual   { background:var(--accent2-bg);color:var(--accent2); }
+.badge-pending  { background:var(--orange-bg); color:var(--orange); }
+.badge-unmapped { background:rgba(106,132,144,.15); color:var(--text-muted); }
+
+.mapping-table tr.status-unmapped { opacity:.55; }
+.mapping-table tr.row-saved       { background:var(--green-bg); transition:background .6s; }
+.mapping-table tr.row-hidden      { display:none; }
+
+/* Distinction visuelle : colonnes devis source vs cible DPGF */
+.mapping-table th.col-source-header {
+  text-align:center;
+  background:var(--bg3);
+  color:var(--accent);
+  border-bottom:2px solid var(--accent);
+  font-size:11px;text-transform:uppercase;letter-spacing:.04em;
+}
+.mapping-table th.col-source-sub {
+  background:var(--bg3);
+  color:var(--text2);
+  font-size:11px;font-weight:500;
+}
+.mapping-table td.col-source  { background:rgba(213,243,17,.04); }
+.mapping-table td.col-target  { background:rgba(36,169,181,.06); }
+
+.filter-btn.active {
+  background:var(--accent-bg);
+  border-color:var(--accent);
+  color:var(--accent);
+}
+</style>
+
+<script>
+// ── État + stats ─────────────────────────────────────────────────────────
+function refreshStats() {
+    const rows = document.querySelectorAll('#mapping-body tr');
+    const counts = { auto:0, manual:0, pending:0, unmapped:0 };
+    rows.forEach(r => {
+        const s = r.dataset.status;
+        if (counts[s] !== undefined) counts[s]++;
+    });
+    document.getElementById('stat-auto').textContent     = `auto: ${counts.auto}`;
+    document.getElementById('stat-manual').textContent   = `manuel: ${counts.manual}`;
+    document.getElementById('stat-pending').textContent  = `à traiter: ${counts.pending}`;
+    document.getElementById('stat-unmapped').textContent = `hors: ${counts.unmapped}`;
+}
+refreshStats();
+
+// ── Filtres ──────────────────────────────────────────────────────────────
+let currentFilter = 'all';
+let searchTerm    = '';
+
+function applyFilters() {
+    document.querySelectorAll('#mapping-body tr').forEach(r => {
+        const statusMatch = currentFilter === 'all' || r.dataset.status === currentFilter;
+        const searchMatch = !searchTerm || r.dataset.designation.includes(searchTerm);
+        r.classList.toggle('row-hidden', !(statusMatch && searchMatch));
+    });
+}
+
+document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentFilter = btn.dataset.filter;
+        applyFilters();
+    });
+});
+document.querySelector('.filter-btn[data-filter="all"]').classList.add('active');
+
+document.getElementById('search-input').addEventListener('input', (e) => {
+    searchTerm = e.target.value.trim().toLowerCase();
+    applyFilters();
+});
+
+// ── Actions ──────────────────────────────────────────────────────────────
+function updateRowStatus(row, newStatus, scoreOverride) {
+    row.dataset.status = newStatus;
+    row.classList.remove('status-auto','status-manual','status-pending','status-unmapped');
+    row.classList.add('status-' + newStatus);
+    const badgeTd = row.querySelector('td:nth-child(2)');
+    let html;
+    if (newStatus === 'manual')        html = '<span class="badge badge-manual">✎ manuel</span>';
+    else if (newStatus === 'auto')     html = '<span class="badge badge-auto">✓ auto</span>';
+    else if (newStatus === 'unmapped') html = '<span class="badge badge-unmapped">✕ hors</span>';
+    else                               html = '<span class="badge badge-pending">⚠ à traiter</span>';
+    if (scoreOverride !== undefined && scoreOverride !== null) {
+        html += `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">score ${Math.round(scoreOverride)}%</div>`;
+    }
+    badgeTd.innerHTML = html;
+
+    row.classList.add('row-saved');
+    setTimeout(() => row.classList.remove('row-saved'), 800);
+    refreshStats();
+}
+
+function assignLine(lineId) {
+    const row    = document.getElementById(`row-${lineId}`);
+    const select = row.querySelector('.dpgf-select');
+    const artId  = select.value;
+
+    if (!artId) {
+        select.style.borderColor = 'var(--red)';
+        setTimeout(() => select.style.borderColor = '', 1500);
+        return;
+    }
+
+    fetch('/api/mapping/assign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ line_id: lineId, dpgf_article_id: parseInt(artId) })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.status === 'ok') {
+            updateRowStatus(row, 'manual', 100);
+            select.dataset.original = artId;
+        }
+    });
+}
+
+function markUnmapped(lineId) {
+    if (!confirm('Marquer comme "hors périmètre DPGF" ?')) return;
+
+    fetch('/api/mapping/assign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ line_id: lineId, action: 'unmapped' })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.status === 'ok') {
+            const row = document.getElementById(`row-${lineId}`);
+            updateRowStatus(row, 'unmapped');
+        }
+    });
+}
+
+// Surligne le select si l'utilisateur change la cible d'un mapping auto
+// (indicateur visuel avant qu'il clique "Valider").
+document.querySelectorAll('.dpgf-select').forEach(sel => {
+    sel.addEventListener('change', () => {
+        const changed = sel.value !== sel.dataset.original;
+        sel.style.borderColor = changed ? 'var(--orange)' : '';
+    });
+});
+</script>
+{% endblock %}
