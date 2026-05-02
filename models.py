@@ -21,6 +21,126 @@ def get_db():
     return conn
 
 
+def _verify_foreign_keys_enabled(conn: sqlite3.Connection) -> None:
+    """SQLite n'active pas les FK par défaut : exiger ON sur la connexion courante."""
+    conn.execute("PRAGMA foreign_keys = ON")
+    row = conn.execute("PRAGMA foreign_keys").fetchone()
+    if row is None or int(row[0]) != 1:
+        raise RuntimeError(
+            "PRAGMA foreign_keys != ON — suppression de section refusée (intégrité)"
+        )
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    r = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (name,),
+    ).fetchone()
+    return r is not None
+
+
+def delete_bibliotheque_section(
+    conn: sqlite3.Connection, chapter: str, section: str
+) -> dict:
+    """Supprime proprement une section (sous-chapitre) dans la bibliothèque DPGF.
+
+    Il n'existe pas de table « section » : clé métier (chapter, section) sur
+    ``dpgf_articles``. Ordre respectant les FK (pas de CASCADE SQLite sur toutes
+    les tables) :
+
+    1. ``affaire_lines`` + ``ratio_overrides`` : nettoyage pour tous les articles
+       de la section (estimations + overrides).
+    2. ``devis_lines`` (NULL) + ``mapping_*`` : uniquement pour les articles
+       **custom** supprimés physiquement.
+    3. DELETE ``dpgf_articles`` custom ; UPDATE ``is_hidden`` pour PSA.
+    4. DELETE ``bibliotheque_section_ratios`` pour la clé (chapter, section).
+
+    Returns:
+        Statistiques pour logs (counts).
+    """
+    chap = (chapter or "").strip()
+    sec = (section or "").strip()
+    if not chap or not sec:
+        raise ValueError("section_delete : chapter et section non vides requis")
+
+    _verify_foreign_keys_enabled(conn)
+
+    rows = conn.execute(
+        """
+        SELECT id, COALESCE(is_custom, 0) AS is_custom
+        FROM dpgf_articles
+        WHERE chapter = ? AND section = ? AND row_type = 'article'
+        """,
+        (chap, sec),
+    ).fetchall()
+
+    ids_all = [int(r["id"]) for r in rows]
+    ids_custom = [int(r["id"]) for r in rows if int(r["is_custom"]) == 1]
+
+    ph_all = ",".join("?" * len(ids_all)) if ids_all else ""
+    ph_cust = ",".join("?" * len(ids_custom)) if ids_custom else ""
+
+    if ids_all:
+        conn.execute(
+            f"DELETE FROM affaire_lines WHERE dpgf_article_id IN ({ph_all})",
+            ids_all,
+        )
+        conn.execute(
+            f"DELETE FROM ratio_overrides WHERE dpgf_article_id IN ({ph_all})",
+            ids_all,
+        )
+
+    if ids_custom:
+        if _table_exists(conn, "devis_lines"):
+            try:
+                conn.execute(
+                    f"UPDATE devis_lines SET dpgf_article_id = NULL "
+                    f"WHERE dpgf_article_id IN ({ph_cust})",
+                    ids_custom,
+                )
+            except sqlite3.OperationalError:
+                pass
+        for tbl in ("mapping_synonyms", "mapping_knowledge"):
+            if _table_exists(conn, tbl):
+                try:
+                    conn.execute(
+                        f"DELETE FROM {tbl} WHERE dpgf_article_id IN ({ph_cust})",
+                        ids_custom,
+                    )
+                except sqlite3.OperationalError:
+                    pass
+
+        conn.execute(
+            f"""
+            DELETE FROM dpgf_articles
+            WHERE chapter = ? AND section = ? AND row_type = 'article'
+              AND COALESCE(is_custom, 0) = 1
+            """,
+            (chap, sec),
+        )
+
+    conn.execute(
+        """
+        UPDATE dpgf_articles SET is_hidden = 1
+        WHERE chapter = ? AND section = ? AND row_type = 'article'
+          AND COALESCE(is_custom, 0) = 0
+        """,
+        (chap, sec),
+    )
+
+    conn.execute(
+        "DELETE FROM bibliotheque_section_ratios WHERE chapter = ? AND section = ?",
+        (chap, sec),
+    )
+
+    return {
+        "chapter": chap,
+        "section": sec,
+        "articles_in_section": len(ids_all),
+        "custom_deleted": len(ids_custom),
+    }
+
+
 def ensure_app_tables():
     """Crée les tables spécifiques à l'application web si absentes."""
     conn = get_db()
@@ -578,15 +698,41 @@ def hide_article(art_id: int):
 
 def delete_custom_article(art_id: int):
     """Supprime définitivement un article custom (is_custom=1).
-    Cascade manuelle : affaire_lines → ratio_overrides → dpgf_articles.
+
+    Même logique de FK que ``delete_bibliotheque_section`` : imports / mapping
+    peuvent référencer ``dpgf_articles`` sans ON DELETE CASCADE.
     """
     conn = get_db()
     try:
-        # Cascade manuelle pour respecter la FK affaire_lines.dpgf_article_id
-        conn.execute("DELETE FROM affaire_lines  WHERE dpgf_article_id=?", (art_id,))
-        conn.execute("DELETE FROM ratio_overrides WHERE dpgf_article_id=?", (art_id,))
-        conn.execute("DELETE FROM dpgf_articles   WHERE id=? AND is_custom=1", (art_id,))
+        _verify_foreign_keys_enabled(conn)
+        aid = int(art_id)
+        conn.execute("DELETE FROM affaire_lines WHERE dpgf_article_id=?", (aid,))
+        conn.execute("DELETE FROM ratio_overrides WHERE dpgf_article_id=?", (aid,))
+        if _table_exists(conn, "devis_lines"):
+            try:
+                conn.execute(
+                    "UPDATE devis_lines SET dpgf_article_id=NULL WHERE dpgf_article_id=?",
+                    (aid,),
+                )
+            except sqlite3.OperationalError:
+                pass
+        for tbl in ("mapping_synonyms", "mapping_knowledge"):
+            if _table_exists(conn, tbl):
+                try:
+                    conn.execute(
+                        f"DELETE FROM {tbl} WHERE dpgf_article_id=?",
+                        (aid,),
+                    )
+                except sqlite3.OperationalError:
+                    pass
+        conn.execute(
+            "DELETE FROM dpgf_articles WHERE id=? AND COALESCE(is_custom,0)=1",
+            (aid,),
+        )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -606,7 +752,11 @@ def save_bibliotheque_save(changes: list):
         return []
     conn = get_db()
     new_ids = []
+    _FIELDS_NO_ARTICLE_ID = frozenset(
+        {"section_ratio", "section_ratio_rename", "section_delete"}
+    )
     try:
+        _verify_foreign_keys_enabled(conn)
         for c in changes:
             if c.get('is_new'):
                 # Calcul row_order : max existant dans la section + 1
@@ -645,8 +795,8 @@ def save_bibliotheque_save(changes: list):
                 value  = c.get('value')
                 if field is None:
                     continue
-                # section_ratio n'a pas d'art_id — les autres champs l'exigent
-                if field != 'section_ratio' and not art_id:
+                # Plusieurs actions bibliothèque n'ont pas d'article id (clé chapitre/section)
+                if field not in _FIELDS_NO_ARTICLE_ID and not art_id:
                     continue
                 if field == 'pu_ht':
                     pu = float(value or 0)
@@ -678,26 +828,8 @@ def save_bibliotheque_save(changes: list):
                         (str(value), art_id)
                     )
                 elif field == 'section_delete':
-                    # Supprime toute une section : masque les PSA, supprime les custom
-                    chap = c.get('chapter', '')
-                    sec  = c.get('section', '')
-                    custom_ids = conn.execute(
-                        "SELECT id FROM dpgf_articles "
-                        "WHERE chapter=? AND section=? AND is_custom=1 AND row_type='article'",
-                        (chap, sec)
-                    ).fetchall()
-                    for row in custom_ids:
-                        conn.execute("DELETE FROM affaire_lines  WHERE dpgf_article_id=?", (row['id'],))
-                        conn.execute("DELETE FROM ratio_overrides WHERE dpgf_article_id=?", (row['id'],))
-                        conn.execute("DELETE FROM dpgf_articles   WHERE id=?", (row['id'],))
-                    conn.execute(
-                        "UPDATE dpgf_articles SET is_hidden=1 "
-                        "WHERE chapter=? AND section=? AND is_custom=0 AND row_type='article'",
-                        (chap, sec)
-                    )
-                    conn.execute(
-                        "DELETE FROM bibliotheque_section_ratios WHERE chapter=? AND section=?",
-                        (chap, sec)
+                    delete_bibliotheque_section(
+                        conn, c.get('chapter', ''), c.get('section', '')
                     )
                 elif field == 'section_ratio_rename':
                     # Renommer la clé section dans bibliotheque_section_ratios
@@ -721,6 +853,9 @@ def save_bibliotheque_save(changes: list):
                             updated_at = CURRENT_TIMESTAMP
                     """, (c.get('chapter', ''), c.get('section', ''), float(value or 0), ratio_unit))
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
     return new_ids

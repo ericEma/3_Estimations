@@ -23,8 +23,8 @@ let expandedChaps = new Set(CHAP_ORDER);
 let expandedSecs  = new Set();
 let selectedId    = null;
 
-// Copie mutable (+ nouveaux articles en session avec id < 0)
-const localData  = ARTICLES.map(a => Object.assign({}, a));
+// Copie mutable (+ nouveaux articles en session avec id < 0) — let : deleteSection réassigne après filtre
+let localData  = ARTICLES.map(a => Object.assign({}, a));
 let   _tempIdSeq = -1;
 
 // Ratios de section : clé = "chapter|||section", valeur = { ratio, unit, manual }
@@ -665,16 +665,21 @@ function deleteSection(chap, sec) {
     selectedId = null; closePanel();
   }
 
-  // Persistance : un seul envoi groupé via section_delete
-  const hasPersisted = secArts.some(a => a.id > 0);
-  if (hasPersisted) {
+  // Persistance : toujours envoyer section_delete (articles PSA/custom + ligne bibliotheque_section_ratios)
+  try {
     dirtyMap.set(`secdel__${chap}|||${sec}`, {
       id: null, field: 'section_delete', chapter: chap, section: sec, value: null,
     });
     schedSave();
+  } catch (err) {
+    console.error('[bibliotheque] deleteSection — mise en file save impossible', err);
   }
 
-  render();
+  try {
+    render();
+  } catch (err) {
+    console.error('[bibliotheque] deleteSection — render() après suppression section', err);
+  }
 }
 
 /* ── AJOUT SECTION après une section existante ───────────────────────────── */

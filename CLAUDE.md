@@ -1,6 +1,6 @@
 # CLAUDE.md — Estimation Élec (Egis)
 > Fichier unique de démarrage de session. Remplace la lecture de instructions.md + CURRENT_STATE.md.
-> Mise à jour : 2026-05-01 | Sprint 9.2 LIVRÉ
+> Mise à jour : 2026-05-02 | Sprint 9.2 — **Bibliothèque DPGF validée (jalon Eric, 2026-05-02)**
 
 ---
 
@@ -133,7 +133,9 @@ bibliotheque_section_ratios (id, chapter, section, ratio_m2, updated_at,
 ```
 app.py              — Routes Flask, filtre date_fr, affaire_view (ratio_ref_m2 avant écrasement)
 models.py           — Couche SQLite : migrations auto, get_bibliotheque_data, save_bibliotheque_save,
+                      delete_bibliotheque_section, _verify_foreign_keys_enabled,
                       hide_article, delete_custom_article, save_total_estime, get_affaires (COALESCE)
+                      — voir DB_ARCHITECTURE.md (FK, suppressions manuelles)
 engine_ratios.py    — compute_ratios(sdo, ccfo, ccfa, cpv) → ratios in-memory pondérés
 templates/
   base.html         — Navbar avec lien 📖 Bibliothèque DPGF
@@ -182,6 +184,11 @@ const CHAP_ORDER = ['Courants Forts', 'Courants faibles', 'Photovoltaïque'];
 ### Validation Inline
 - Désignation vide → erreur
 - PU négatif ou NaN → erreur
+
+### Jalon UX 2026-05-02 (validé Eric)
+- **Scroll table** : dépend du layout flex `.bibl-page` + `min-height: 0` — ne pas casser sans accord.
+- **`bibliotheque.js`** : état `localData` en **`let`** (réassignation dans `deleteSection`).
+- **Suppression section** : payload `section_delete` ; backend `delete_bibliotheque_section` + transaction / rollback dans `save_bibliotheque_save`.
 - Qty négative ou NaN → erreur
 - Comportement : `.cell-error` (bordure rouge) + `scrollIntoView({behavior:'smooth', block:'center'})`
 - Save bloqué tant qu'erreur présente

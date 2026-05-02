@@ -1,5 +1,18 @@
 # CURRENT_STATE.md — Estimation Élec
-**Mise à jour : 2026-04-26 | Sprint 8 LIVRÉ + Session 26/04 : Bibliothèque DPGF + Lanceur corrigé**
+**Mise à jour : 2026-05-02 | Jalon : Bibliothèque DPGF validée (Eric) + technique suppression section**
+
+---
+
+## Jalon validé — 2026-05-02 — Page Bibliothèque DPGF
+
+**Validé par Eric** : la page `/bibliotheque` (et variante contextuelle `/bibliotheque/<id>`) est **stable et utilisable en production bêta** : scroll vertical du tree-grid, édition inline (dont cellules manuelles / orange), KPI SDO / kWc, persistance debounce 800 ms, suppression de **section** (sous-chapitre) cohérente avec la base.
+
+**À mémoriser pour les travaux suivants** :
+
+- **Scroll / layout** : la chaîne flex `body.bibl-page` + `min-height: 0` sur `#root` → `.grid-wrap` est ce qui rend le scroll de la table possible — **ne pas modifier le CSS bibliothèque sans accord** (régression fréquente).
+- **JS** : le tableau mutable `localData` doit rester déclaré en **`let`**, pas `const` (`deleteSection` réassigne après `filter`) — sinon `TypeError: Assignment to constant variable` et plus aucune save/render.
+- **Backend** : suppression de section = `delete_bibliotheque_section` dans `models.py` ; batch save = `_FIELDS_NO_ARTICLE_ID` pour `section_delete` / `section_ratio_rename` ; rollback sur erreur. Référence **`DB_ARCHITECTURE.md`** (SQLite, FK par connexion, cascades manuelles).
+- **Schéma** : pas d’`ALTER TABLE` sur `estimation_elec.db` sans validation Eric.
 
 ---
 
@@ -7,7 +20,8 @@
 
 **Projet** : ESTIMATION ÉLEC (EGIS) — Phase Bêta
 **Sprint 8** : ✅ Livré — Corrections QC Eric (5 rounds de retours)
-**Prochain** : Sprint 9 — À définir selon retours Eric post-sprint 8
+**Sprint 9 (bibliothèque)** : ✅ **Jalon 2026-05-02** — Page Bibliothèque DPGF validée fonctionnellement
+**Prochain** : Travaux suivants à planifier avec Eric (hors périmètre de ce jalon)
 
 ---
 
@@ -17,6 +31,7 @@
 |---|---|
 | Serveur Flask | Opérationnel (`Lancer_Estimateur.bat`) |
 | Base SQLite | **v8** (colonne `total_estime_ht` ajoutée par migration auto) |
+| Bibliothèque DPGF | ✅ **Validée 2026-05-02** — scroll, édition, suppression section, `DB_ARCHITECTURE.md` |
 | Référentiel DPGF | 285 lignes PSA (3 chapitres / 44 sections / 285 articles) |
 | Types de bâtiments | 15 types (migration FK-safe : PRAGMA foreign_keys OFF/ON) |
 | Lot detection | Case-insensitive via `| lower` Jinja2 (CFO/CFA/PV corrects) |
@@ -195,6 +210,24 @@ ratio_overrides (id, dpgf_article_id, pu_override, raison, created_at)
 ### Lanceur corrigé
 - **[VAL-9-09]** `Lancer_Estimateur.bat` : `cmd /k` → fenêtre reste ouverte si crash
 - **[VAL-9-10]** Délai adaptatif : boucle netstat jusqu'à 20 s (au lieu de timeout fixe 3 s)
+
+---
+
+## Session 2026-05-02 — Bibliothèque DPGF : suppression de section (sous-chapitre)
+
+**Contexte** : une tentative précédente de suppression de sous-chapitres avait provoqué une régression (persistance incohérente / état BDD douteux).
+
+**Causes identifiées et mesures** :
+
+1. **Filtrage Python trop strict dans `save_bibliotheque_save`** : la condition `if field != 'section_ratio' and not art_id: continue` **ignorait silencieusement** les payloads `section_delete`, `section_ratio_rename` (et tout champ sans `id`), car `id` est `null` côté JSON. **Correction** : ensemble explicite `_FIELDS_NO_ARTICLE_ID` pour autoriser ces champs sans `art_id`.
+2. **Pas de rollback explicite** : en cas d’erreur au milieu du batch bibliothèque, la connexion pouvait laisser une transaction non validée de façon peu claire. **Correction** : `except` → `conn.rollback()` puis relance de l’exception dans `save_bibliotheque_save` ; même principe pour `delete_custom_article`.
+3. **Ordre de suppression vs FK** : les articles `dpgf_articles` sont référencés par `affaire_lines`, `ratio_overrides`, et (schéma import) `devis_lines`, `mapping_synonyms`, `mapping_knowledge`. **Correction** : fonction centralisée `delete_bibliotheque_section(conn, chapter, section)` — nettoyage ordonné, puis DELETE custom / `is_hidden` PSA, puis `bibliotheque_section_ratios`.
+4. **`PRAGMA foreign_keys`** : vérification obligatoire via `_verify_foreign_keys_enabled(conn)` avant les suppressions bibliothèque (chaque connexion : `get_db()` exécute déjà `PRAGMA foreign_keys = ON`).
+5. **Côté JS** : `deleteSection` envoie **toujours** `section_delete` (y compris pour ne garder que la cohérence `bibliotheque_section_ratios`) ; `try/catch` + `console.error` autour de la file de save et de `render()` pour tracer une anomalie sans casser le flux silencieusement.
+6. **Documentation** : fichier `DB_ARCHITECTURE.md` — SQLite, FK par connexion, cascades manuelles.
+7. **Bug bloquant UI (corrigé)** : `localData` était déclaré en **`const`** alors que `deleteSection` réassigne avec `localData = localData.filter(...)` → erreur console `TypeError: Assignment to constant variable` (~l.659), arrêt du script **avant** `dirtyMap` / `schedSave()` / `render()`. **Correction** : déclaration **`let localData`**. Les arguments `chapter` et `section` passés à `deleteSection(chap, sec)` depuis le template sont inchangés ; le payload `section_delete` inclut bien `chapter` et `section`.
+
+**Fichiers touchés** : `models.py`, `static/js/bibliotheque.js` (logique suppression section + logs + `let localData`), `DB_ARCHITECTURE.md`, `CURRENT_STATE.md`. **Aucun changement CSS** ; scroll table bibliothèque inchangé.
 
 ---
 
