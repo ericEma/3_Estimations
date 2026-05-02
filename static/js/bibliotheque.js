@@ -426,7 +426,7 @@ function startEdit(td, evt) {
   td.innerHTML = `<input class="inline-inp${isNum ? ' r' : ''}"
     type="${isNum ? 'number' : 'text'}"
     step="${field === 'pu_ht' ? '0.01' : '1'}" min="0"
-    value="${esc(curVal)}"`;
+    value="${esc(curVal)}">`;
 
   const inp = td.querySelector('input');
   inp.focus();
@@ -472,11 +472,10 @@ function startSecRatioEdit(td, chap, sec, currentRatio, ratioUnit) {
   const unit = ratioUnit || (isPVChap(chap) ? 'kwc' : 'm2');
   const lbl  = unit === 'kwc' ? '€/kWc' : '€/m²';
   td.classList.add('editing');
-  td.innerHTML = `<input class="inline-inp r"
+  td.innerHTML = `<input class="inline-inp r inline-inp-ratio"
     type="number" step="0.1" min="0"
     value="${currentRatio > 0 ? currentRatio.toFixed(2) : ''}"
-    placeholder="${lbl}"
-    class="inline-inp-ratio"`;
+    placeholder="${lbl}">`;
 
   const inp = td.querySelector('input');
   inp.focus();

@@ -1059,7 +1059,9 @@ body.bibl-page {
   --r:                8px;
   --sidebar-w:        210px;
   --panel-w:          300px;
-  height: 100%;
+  /* Hauteur viewport explicite : évite la chaîne height:% cassée si html n'a pas de hauteur */
+  min-height: 100vh;
+  height: 100vh;
   background: var(--bg);
   color: var(--text);
   font-family: 'Inter', system-ui, sans-serif;
@@ -1067,7 +1069,8 @@ body.bibl-page {
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
-body.bibl-page #root { height:100%; display:flex; flex-direction:column; }
+/* min-height:0 : permet aux flex enfants de rétrécir sous la taille du contenu → scroll dans .grid-wrap */
+body.bibl-page #root { height: 100%; min-height: 0; display: flex; flex-direction: column; }
 
 /* ── HEADER (scopé) ── */
 .bibl-page .app-header {
@@ -1116,7 +1119,7 @@ body.bibl-page #root { height:100%; display:flex; flex-direction:column; }
 .h-home:hover { border-color:var(--accent-b); color:var(--accent-b); }
 
 /* ── SHELL ── */
-.app-shell { flex:1; display:flex; overflow:hidden; }
+.bibl-page .app-shell { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 
 /* ── SIDEBAR (scopée) ── */
 .bibl-page .sidebar {
@@ -1142,7 +1145,7 @@ body.bibl-page #root { height:100%; display:flex; flex-direction:column; }
 .sb-all.on  { color:var(--accent-b); border-left-color:var(--accent-b); }
 
 /* ── MAIN (scopée) ── */
-.bibl-page .main { flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:0; }
+.bibl-page .main { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
 
 /* ── KPI STRIP ── */
 .kpi-strip { display:flex; gap:1px; flex-shrink:0; background:var(--grid-line-strong); border-bottom:1px solid var(--grid-line-strong); }
@@ -1173,10 +1176,10 @@ body.bibl-page #root { height:100%; display:flex; flex-direction:column; }
 .bibl-page .btn-outlined:hover { border-color:var(--accent-b); color:var(--accent-b); }
 
 /* ── GRID PANEL WRAP ── */
-.grid-panel-wrap { flex:1; display:flex; overflow:hidden; }
+.bibl-page .grid-panel-wrap { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 
 /* ── TREE-GRID ── */
-.grid-wrap  { flex:1; overflow:auto; background:var(--bg); }
+.bibl-page .grid-wrap { flex: 1; min-height: 0; overflow: auto; background: var(--bg); }
 .tree-table { width:100%; border-collapse:collapse; table-layout:fixed; }
 .tree-table colgroup col:nth-child(1) { width:3px; }
 .tree-table colgroup col:nth-child(2) { width:auto; }
