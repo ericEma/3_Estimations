@@ -128,6 +128,8 @@
     <span class="status-badge status-{{ affaire.statut }}">{{ affaire.statut }}</span>
   </div>
   <div class="topbar-actions">
+    <a href="{{ url_for('affaire_estimation', affaire_id=affaire.id) }}"
+       class="btn btn-sm btn-estimer" title="Saisie estimation (référentiel + zone de saisie)">📊 Estimation</a>
     <div class="view-mode-group" style="display:flex;gap:4px" title="Mode d'affichage">
       <button class="btn btn-sm btn-secondary" id="btn-mode-1"
               onclick="setViewMode(1)" title="Mode 1 : têtes de chapitres uniquement (CFO/CFA/PV)">1</button>

@@ -5,7 +5,7 @@
 <div class="topbar">
   <div>
     {% if edit_mode %}
-    <a href="{{ url_for('affaire_view', affaire_id=affaire.id) }}" style="color:var(--text-muted);font-size:13px">← Retour au calculateur</a>
+    <a href="{{ url_for('affaire_estimation', affaire_id=affaire.id) }}" style="color:var(--text-muted);font-size:13px">← Retour à l'estimation</a>
     <span class="topbar-title" style="margin-left:12px">Modifier la fiche</span>
     {% else %}
     <a href="{{ url_for('index') }}" style="color:var(--text-muted);font-size:13px">← Affaires</a>
@@ -21,7 +21,7 @@
   <div class="page-header">
     <div>
       <div class="page-title">{% if edit_mode %}Modifier la fiche affaire{% else %}Créer une Affaire{% endif %}</div>
-      <div class="page-subtitle">Configurez les paramètres de votre chiffrage</div>
+      <div class="page-subtitle">{% if edit_mode %}Configurez les paramètres de votre chiffrage{% else %}Paramètres de l'opération — la saisie chiffrée est prévue pour la personne en charge du lot électricité{% endif %}</div>
     </div>
   </div>
 
@@ -227,22 +227,22 @@
     </div>
 
     <div style="display:flex;gap:12px;justify-content:flex-end">
-      <a href="{% if edit_mode %}{{ url_for('affaire_view', affaire_id=affaire.id) }}{% else %}{{ url_for('index') }}{% endif %}"
+      <a href="{% if edit_mode %}{{ url_for('affaire_estimation', affaire_id=affaire.id) }}{% else %}{{ url_for('index') }}{% endif %}"
          class="btn btn-secondary">Annuler</a>
       <button type="submit" id="btn-create" class="btn btn-primary btn-lg">
-        {% if edit_mode %}💾 Enregistrer les modifications{% else %}⚡ Créer et ouvrir le calculateur{% endif %}
+        {% if edit_mode %}💾 Enregistrer les modifications{% else %}⚡ Créer et ouvrir l'estimation{% endif %}
       </button>
     </div>
 
   </form>
 </div>
 
-<!-- Overlay de chargement : affiché pendant l'injection des 285 lignes -->
+<!-- Overlay de chargement au submit (création / enregistrement fiche) -->
 <div id="loading-overlay" style="display:none;position:fixed;inset:0;
      background:rgba(9,33,44,.92);z-index:9999;
      flex-direction:column;align-items:center;justify-content:center;gap:20px">
-  <div style="font-size:22px;font-weight:800;color:var(--accent)">Création en cours…</div>
-  <div style="font-size:13px;color:var(--text2)">Injection des 285 lignes DPGF avec ratios PSA</div>
+  <div style="font-size:22px;font-weight:800;color:var(--accent)">Enregistrement…</div>
+  <div style="font-size:13px;color:var(--text2)">Ouverture de l'estimation</div>
   <div style="width:320px;height:8px;background:var(--bg3);border-radius:4px;overflow:hidden">
     <div id="progress-bar" style="height:100%;width:0%;background:var(--accent);
          border-radius:4px;transition:width .25s ease"></div>

@@ -1,5 +1,7 @@
 # CURRENT_STATE.md — Estimation Élec
-**Mise à jour : 2026-05-02 | Jalon : Bibliothèque DPGF validée (Eric) + technique suppression section**
+**Mise à jour : 2026-05-03 | Sprint 9.4 — Page Estimation d'affaire + migration hors catalogue**
+
+> Sous Windows (FS insensible à la casse), un fichier `current_state.md` distinct à la racine **n’est pas possible** : utiliser uniquement ce fichier `CURRENT_STATE.md`.
 
 ---
 
@@ -21,7 +23,8 @@
 **Projet** : ESTIMATION ÉLEC (EGIS) — Phase Bêta
 **Sprint 8** : ✅ Livré — Corrections QC Eric (5 rounds de retours)
 **Sprint 9 (bibliothèque)** : ✅ **Jalon 2026-05-02** — Page Bibliothèque DPGF validée fonctionnellement
-**Prochain** : Travaux suivants à planifier avec Eric (hors périmètre de ce jalon)
+**Sprint 9.4 (estimation affaire)** : ✅ **2026-05-03** — `/affaire/<id>/estimation`, double calque, AJAX, lignes `dpgf_article_id` NULL
+**Prochain** : Export Excel depuis la page Estimation (placeholder) ; validation Eric si ajustement migration BDD
 
 ---
 
@@ -32,6 +35,7 @@
 | Serveur Flask | Opérationnel (`Lancer_Estimateur.bat`) |
 | Base SQLite | **v8** (colonne `total_estime_ht` ajoutée par migration auto) |
 | Bibliothèque DPGF | ✅ **Validée 2026-05-02** — scroll, édition, suppression section, `DB_ARCHITECTURE.md` |
+| Estimation affaire | ✅ **2026-05-03** — snapshot catalogue + lignes persistantes, KPI CFO/CFA/PV, API `estimation/save` |
 | Référentiel DPGF | 285 lignes PSA (3 chapitres / 44 sections / 285 articles) |
 | Types de bâtiments | 15 types (migration FK-safe : PRAGMA foreign_keys OFF/ON) |
 | Lot detection | Case-insensitive via `| lower` Jinja2 (CFO/CFA/PV corrects) |
@@ -43,6 +47,22 @@
 | Type bâtiment | Sélecteur dans la barre provisions (même ligne SDO/KVA/Phase) |
 | Retour fiche affaire | Lien "✏️ Modifier la fiche" depuis le calculateur |
 | Édition affaire | Route `/affaire/<id>/edit` (GET/POST) avec `affaire_new.html` |
+
+---
+
+## Sprint 9.4 — Page Estimation d'affaire (implémenté 2026-05-03)
+
+- **Route** : `GET /affaire/<id>/estimation` — `affaire_estimation.html` (même layout `body.bibl-page` que la bibliothèque pour le scroll).
+- **Données** : `get_estimation_catalog_rows`, `get_estimation_custom_rows`, `compute_estimation_kpis` (`models.py`).
+- **Persistance** : `POST /api/affaire/<id>/estimation/save` → `save_estimation_changes` ; debounce **600 ms** (`affaire_estimation.js`) ; mise à jour `total_estime_ht`.
+- **BDD** : migration `_migrate_affaire_lines_hors_catalogue` — `dpgf_article_id` nullable, `line_designation`, `line_lot` ; `save_affaire_lines` ne supprime que `WHERE dpgf_article_id IS NOT NULL`.
+- **UX** : calque rose (unité + PU référentiel, lecture seule), calque vert (qté, PU estimation, total temps réel) ; hors catalogue : rose « — », saisie désignation / unité / lot en vert.
+- **Export** : bouton **placeholder** (alerte).
+- **Navigation** : bouton vert « Estimation » dans la topbar du calculateur (`affaire.html`) ; bouton « Estimer » sur chaque carte du dashboard (`index.html`).
+- **Création affaire** : après `POST /affaire/new`, redirection vers `/affaire/<id>/estimation` sans injection immédiate des 285 lignes (catalogue complet, qté 0 ; injection au premier passage sur le calculateur si `affaire_lines` vide).
+- **Totaux** : arrondi strict à 2 décimales côté Python (`_round_money2`, KPI API) et côté JS (`round2`, `moneyTot`, KPI strip).
+
+Fichiers : `app.py`, `models.py`, `templates/affaire_estimation.html`, `static/js/affaire_estimation.js`, `static/css/style.css`, `templates/affaire.html`, `templates/index.html`, `templates/affaire_new.html`, `CLAUDE.md`.
 
 ---
 
@@ -103,10 +123,11 @@ affaires (
     total_estime_ht          -- Sprint 8 : total effectif (ratio fallback inclus)
 )
 affaire_lines (
-    id, affaire_id, dpgf_article_id, designation, lot, ratio_type,
-    unit, quantity, unit_price_ht, total_ht, is_included,
-    quantity_source, unit_price_source, created_at, updated_at,
-    unit_override, unit_source  -- Sprint 7
+    id, affaire_id, dpgf_article_id,  -- nullable Sprint 9.4 (hors catalogue)
+    quantity, unit_price_ht, total_ht, is_included,
+    quantity_source, unit_price_source, created_at,
+    unit_override, unit_source,  -- Sprint 7
+    line_designation, line_lot   -- Sprint 9.4 sur-mesure
 )
 affaire_chapter_settings (   -- Sprint 7
     id, affaire_id, chapter_key, is_included, use_macro,
@@ -172,8 +193,10 @@ ratio_overrides (id, dpgf_article_id, pu_override, raison, created_at)
 | `/` | GET | Dashboard — liste affaires |
 | `/affaire/new` | GET/POST | Créer affaire + injecter 285 lignes |
 | `/affaire/<id>` | GET | Calculateur DPGF |
+| `/affaire/<id>/estimation` | GET | **Sprint 9.4** — Saisie estimation (double calque) |
 | `/affaire/<id>/edit` | GET/POST | **Sprint 8** — Édition fiche affaire |
 | `/api/affaire/<id>/save` | POST | Sauvegarder lignes + total_estime |
+| `/api/affaire/<id>/estimation/save` | POST | **Sprint 9.4** — Sauvegarde incrémentale page Estimation |
 | `/api/affaire/<id>/params` | POST | Auto-save paramètres (10 champs dont category_id) |
 | `/api/affaire/<id>/chapter_settings` | POST | Auto-save checkbox/mode Macro |
 | `/api/affaire/<id>/export` | GET | Export Excel + récap provisions |

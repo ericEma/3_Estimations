@@ -22,12 +22,18 @@
   {% if affaires %}
   <div class="affaires-grid">
     {% for a in affaires %}
-    <div class="affaire-card" onclick="location.href='{{ url_for('affaire_view', affaire_id=a.id) }}'">
+    <div class="affaire-card" onclick="location.href='{{ url_for('affaire_estimation', affaire_id=a.id) }}'">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
         <span class="status-badge status-{{ a.statut }}">{{ a.statut|title }}</span>
-        <button class="btn btn-sm btn-danger"
-                onclick="event.stopPropagation(); deleteAffaire({{ a.id }}, '{{ a.name }}')"
-                style="opacity:.5" title="Supprimer">✕</button>
+        <div style="display:flex;gap:6px;align-items:center" onclick="event.stopPropagation()">
+          <a href="{{ url_for('affaire_estimation', affaire_id=a.id) }}"
+             class="btn btn-sm btn-estimer" title="Ouvrir l'estimation (chiffrage)">📊 Estimer</a>
+          <button type="button" class="btn btn-sm btn-danger"
+                  data-affaire-id="{{ a.id }}"
+                  data-affaire-name="{{ a.name | e }}"
+                  onclick="event.stopPropagation(); deleteAffaireFromBtn(this)"
+                  style="opacity:.5" title="Supprimer">✕</button>
+        </div>
       </div>
 
       <div class="affaire-card-title">{{ a.name }}</div>
@@ -91,11 +97,19 @@
 </div>
 
 <script>
-function deleteAffaire(id, name) {
-    if (!confirm(`Supprimer l'affaire "${name}" ?`)) return;
-    fetch(`/api/affaire/${id}/delete`, { method: 'POST' })
-        .then(r => r.json())
-        .then(() => location.reload());
+function deleteAffaireFromBtn(btn) {
+    var id = parseInt(btn.getAttribute('data-affaire-id'), 10);
+    var name = btn.getAttribute('data-affaire-name') || '';
+    if (!id || !confirm('Supprimer l\'affaire "' + name + '" ?')) return;
+    fetch('/api/affaire/' + id + '/delete', { method: 'POST' })
+        .then(function (r) {
+            if (!r.ok) return Promise.reject(new Error('HTTP ' + r.status));
+            return r.json();
+        })
+        .then(function () { location.reload(); })
+        .catch(function () {
+            alert('Suppression impossible (réseau ou serveur).');
+        });
 }
 </script>
 {% endblock %}

@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 logs/
 .0_Saves/
+debug-*.log
+*_tmp_probe_*.py
+_tmp_probe_*.py
+_tmp_probe_*.txt

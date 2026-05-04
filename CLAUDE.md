@@ -112,7 +112,7 @@ bibliotheque_section_ratios (id, chapter, section, ratio_m2, updated_at,
 | Route | Méthode | Description |
 |---|---|---|
 | `/` | GET | Dashboard — liste affaires |
-| `/affaire/new` | GET/POST | Créer affaire + injecter 285 lignes |
+| `/affaire/new` | GET/POST | Créer affaire → redirection `/affaire/<id>/estimation` (injection 285 lignes au 1er passage calculateur si vide) |
 | `/affaire/<id>` | GET | Calculateur DPGF |
 | `/affaire/<id>/edit` | GET/POST | Édition fiche affaire |
 | `/api/affaire/<id>/save` | POST | Sauvegarder lignes + total_estime |

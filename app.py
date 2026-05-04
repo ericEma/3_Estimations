@@ -191,10 +191,9 @@ def affaire_new():
             'notes':               request.form.get('notes'),
         }
         affaire_id = models.create_affaire(data)
-        # Injection immédiate des 285 lignes DPGF avec ratios calculés
-        affaire = models.get_affaire(affaire_id)
-        _initialize_affaire_lines(affaire_id, affaire)
-        return redirect(url_for('affaire_view', affaire_id=affaire_id))
+        # Pas d'injection ici : la page Estimation affiche le catalogue avec qté 0
+        # tant qu'aucune ligne n'existe ; le calculateur injecte au premier passage si besoin.
+        return redirect(url_for('affaire_estimation', affaire_id=affaire_id))
 
     return render_template('affaire_new.html',
                            categories=categories,
@@ -228,7 +227,7 @@ def affaire_edit(affaire_id):
             'statut':              affaire.get('statut', 'brouillon'),
         }
         models.update_affaire(affaire_id, data)
-        return redirect(url_for('affaire_view', affaire_id=affaire_id))
+        return redirect(url_for('affaire_estimation', affaire_id=affaire_id))
 
     return render_template('affaire_new.html',
                            categories=categories,
@@ -329,6 +328,54 @@ def affaire_view(affaire_id):
                            categories=categories)
 
 
+@app.route('/affaire/<int:affaire_id>/estimation')
+def affaire_estimation(affaire_id):
+    """Page saisie « double calque » : référentiel (lecture seule) + estimation éditable."""
+    affaire = models.get_affaire(affaire_id)
+    if not affaire:
+        flash('Affaire introuvable', 'error')
+        return redirect(url_for('index'))
+
+    catalog = models.get_estimation_catalog_rows(affaire_id)
+    customs = models.get_estimation_custom_rows(affaire_id)
+    totals = models.compute_estimation_kpis(affaire_id)
+    chapter_state = models.get_estimation_chapter_state(affaire_id)
+    section_state = models.get_estimation_section_state(affaire_id)
+    affaires = models.get_affaires()
+
+    return render_template(
+        'affaire_estimation.html',
+        affaire=affaire,
+        affaires=affaires,
+        affaire_id=affaire_id,
+        catalog_rows=catalog,
+        custom_rows=customs,
+        totals=totals,
+        chapter_state=chapter_state,
+        section_state=section_state,
+    )
+
+
+@app.route('/api/affaire/<int:affaire_id>/estimation/save', methods=['POST'])
+def affaire_estimation_save(affaire_id):
+    """Auto-save des lignes depuis la page Estimation d'affaire (debounce JS)."""
+    if not models.get_affaire(affaire_id):
+        return jsonify({'status': 'error', 'code': 404, 'message': 'Affaire introuvable'}), 404
+    data = request.get_json(force=True) or {}
+    raw_ch = data.get('changes')
+    if raw_ch is None or not isinstance(raw_ch, list):
+        changes = []
+    else:
+        changes = raw_ch
+    try:
+        out = models.save_estimation_changes(affaire_id, changes)
+        return jsonify(out)
+    except Exception as exc:
+        logger.error(f"estimation/save FAILED | affaire_id={affaire_id} | {exc}")
+        logger.exception(exc)
+        return jsonify({'status': 'error', 'code': 500, 'message': str(exc)}), 500
+
+
 @app.route('/api/affaire/<int:affaire_id>/save', methods=['POST'])
 def affaire_save(affaire_id):
     data = request.get_json(force=True)
@@ -351,7 +398,17 @@ def affaire_params(affaire_id):
     """Auto-save des paramètres de cadrage (SDO, kVA, phase, taux)."""
     data = request.get_json(force=True)
     models.update_affaire_params(affaire_id, data)
-    return jsonify({'status': 'ok'})
+    synced = 0
+    if 'surface_sdo' in data and models.get_affaire(affaire_id):
+        try:
+            synced = models.batch_sync_estimation_m2_quantities(
+                affaire_id, float(data['surface_sdo'])
+            )
+        except (TypeError, ValueError):
+            synced = 0
+    kpis = models.compute_estimation_kpis(affaire_id)
+    models.save_total_estime(affaire_id, kpis['ALL'])
+    return jsonify({'status': 'ok', 'totals': kpis, 'm2_rows_updated': synced})
 
 
 @app.route('/api/affaire/<int:affaire_id>/chapter_settings', methods=['POST'])
@@ -360,7 +417,9 @@ def affaire_chapter_settings(affaire_id):
     data     = request.get_json(force=True)
     settings = data.get('settings', [])
     models.save_chapter_settings(affaire_id, settings)
-    return jsonify({'status': 'ok', 'saved': len(settings)})
+    kpis = models.compute_estimation_kpis(affaire_id)
+    models.save_total_estime(affaire_id, kpis['ALL'])
+    return jsonify({'status': 'ok', 'saved': len(settings), 'totals': kpis})
 
 
 @app.route('/api/affaire/<int:affaire_id>/delete', methods=['POST'])

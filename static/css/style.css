@@ -269,6 +269,25 @@ a:hover { color: var(--accent); }
 .btn-success:hover { background: var(--green); color: #000; }
 
 .btn-sm { padding: 4px 10px; font-size: 11.5px; }
+
+/* Bouton accès estimation (liste affaires + calculateur) */
+.btn-estimer {
+  background: var(--green) !important;
+  color: #001a1e !important;
+  border: none !important;
+  font-weight: 700;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: filter 0.12s ease, transform 0.12s ease;
+}
+.btn-estimer:hover {
+  filter: brightness(1.08);
+  color: #000 !important;
+}
 .btn-lg { padding: 9px 20px; font-size: 13.5px; }
 
 /* Lot filter buttons */
@@ -1077,6 +1096,8 @@ body.bibl-page #root { height: 100%; min-height: 0; display: flex; flex-directio
   display:flex; align-items:center; gap:10px;
   padding:0 14px; height:46px; flex-shrink:0;
   background:var(--bg2); border-bottom:1px solid var(--grid-line-strong);
+  position: relative;
+  z-index: 5;
 }
 .bibl-page .logo { display:flex; align-items:center; gap:7px; text-decoration:none; }
 .bibl-page .logo-mark {
@@ -1122,7 +1143,14 @@ body.bibl-page #root { height: 100%; min-height: 0; display: flex; flex-directio
 .bibl-page .app-shell { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 
 /* ── SIDEBAR (scopée) ── */
+/* Réinitialise .sidebar global (fixed top:0 z-index:100) : sinon la colonne
+   recouvre le bandeau .app-header sur bibliothèque / estimation affaire. */
 .bibl-page .sidebar {
+  position: relative;
+  top: auto;
+  left: auto;
+  bottom: auto;
+  z-index: auto;
   width:var(--sidebar-w); flex-shrink:0;
   background:var(--bg2); border-right:1px solid var(--grid-line-strong);
   display:flex; flex-direction:column; overflow-y:auto;
@@ -1145,7 +1173,10 @@ body.bibl-page #root { height: 100%; min-height: 0; display: flex; flex-directio
 .sb-all.on  { color:var(--accent-b); border-left-color:var(--accent-b); }
 
 /* ── MAIN (scopée) ── */
-.bibl-page .main { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+.bibl-page .main {
+  margin-left: 0;
+  flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; min-width: 0;
+}
 
 /* ── KPI STRIP ── */
 .kpi-strip { display:flex; gap:1px; flex-shrink:0; background:var(--grid-line-strong); border-bottom:1px solid var(--grid-line-strong); }
@@ -1221,7 +1252,7 @@ tr.row-chap td { background:var(--bg3); border-bottom:1px solid var(--grid-line-
 tr.row-sec  { cursor:pointer; user-select:none; }
 tr.row-sec:hover td { background:rgba(72,110,130,.06); }
 tr.row-sec td { background:var(--bg2); border-bottom:1px solid var(--grid-line-strong); }
-.sec-cell   { display:flex; align-items:center; gap:6px; padding:7px 10px 7px 2px; }
+.sec-cell   { display:flex; align-items:center; gap:7px; padding:9px 10px 7px 4px; }
 .sec-label  { font-size:11.5px; font-weight:600; color:var(--text-sub); cursor:pointer; }
 .sec-label:hover { color:var(--accent-b); text-decoration:underline dotted; }
 .sec-count  { font-size:10px; color:var(--text-muted); font-family:'IBM Plex Mono',monospace; }
@@ -1383,15 +1414,155 @@ tr.row-art:hover .dup-btn { display:inline-flex; }
 .flash-err { position:fixed; bottom:20px; right:20px; background:var(--danger); color:#fff; padding:8px 16px; border-radius:6px; font-size:12px; font-weight:700; z-index:9999; animation:bibl-fadeout 3s forwards; }
 @keyframes bibl-fadeout { 0%,60%{opacity:1} 100%{opacity:0;pointer-events:none} }
 
-/* Force l'indentation manuelle d'Eric */
-.row-art .cell-desig, 
-.art-desig-cell, 
+/* Force l'indentation manuelle d'Eric (hors grille estimation : table-cell requis) */
+.row-art .cell-desig,
+.art-desig-cell,
 [class*="designation"] {
-    padding-left: 50px !important; 
+    padding-left: 50px !important;
     display: inline-block !important;
+}
+body.estim-page .estim-table .art-desig-cell,
+body.estim-page .estim-table .row-art .cell-desig {
+    display: table-cell !important;
+    vertical-align: middle;
 }
 
 .row-sec .cell-desig, 
 [class*="section"] .cell-desig {
     padding-left: 30px !important;
+}
+
+/* ── Page Estimation affaire (double calque) — scoping sous .bibl-page ── */
+body.estim-page .sdo-readonly {
+  font-size: 12px; font-weight: 600; color: var(--text-sub);
+  padding: 4px 8px; font-family: 'IBM Plex Mono', monospace;
+}
+body.estim-page .estim-hdr-inp.estim-hdr-sel {
+  text-align: left;
+  padding-left: 8px;
+  width: auto;
+  min-width: 88px;
+}
+body.estim-page .estim-legend {
+  display: flex; gap: 16px; padding: 6px 12px 0;
+  font-size: 10px; color: var(--text-muted); flex-shrink: 0;
+}
+body.estim-page .estim-legend-ref::before {
+  content: ''; display: inline-block; width: 12px; height: 12px; border-radius: 2px;
+  margin-right: 6px; vertical-align: -2px;
+  background: rgba(232, 160, 180, 0.45);
+}
+body.estim-page .estim-legend-est::before {
+  content: ''; display: inline-block; width: 12px; height: 12px; border-radius: 2px;
+  margin-right: 6px; vertical-align: -2px;
+  background: rgba(63, 185, 80, 0.35);
+}
+body.estim-page .estim-table col.estim-col-stripe { width: 3px; }
+body.estim-page .estim-table col.estim-col-desig { width: auto; }
+body.estim-page .estim-table col.estim-col-ref { width: 72px; }
+body.estim-page .estim-table col.estim-col-est { width: 100px; }
+body.estim-page .estim-table col.estim-col-tot { width: 110px; }
+body.estim-page .estim-table col.estim-col-act { width: 40px; }
+body.estim-page .estim-table .cell-ref,
+body.estim-page .estim-table th.cell-ref-h {
+  background: rgba(232, 160, 180, 0.12);
+}
+body.estim-page .estim-table .cell-est,
+body.estim-page .estim-table th.cell-est-h {
+  background: rgba(63, 185, 80, 0.1);
+}
+body.estim-page .estim-readonly {
+  user-select: none; pointer-events: none; opacity: 0.95;
+}
+body.estim-page .estim-inp {
+  width: 100%; max-width: 100%; box-sizing: border-box;
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text); font-size: 11px; font-family: 'IBM Plex Mono', monospace;
+  padding: 4px 6px; border-radius: 4px; text-align: right;
+}
+body.estim-page .estim-inp-txt { text-align: left; }
+body.estim-page .estim-inp-narrow { width: 72px; display: inline-block; margin-right: 8px; }
+body.estim-page .estim-inline-lbl { font-size: 9px; color: var(--text-muted); margin: 0 6px 0 10px; text-transform: uppercase; }
+body.estim-page .estim-sel {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  font-size: 11px; border-radius: 4px; padding: 3px 6px;
+}
+body.estim-page .estim-inp:focus,
+body.estim-page .estim-sel:focus { border-color: var(--accent); outline: none; }
+body.estim-page .row-art-custom .art-desig-cell,
+body.estim-page .row-art-custom td.cell-est:first-of-type { padding-left: 10px !important; display: table-cell !important; }
+body.estim-page tr.row-art-sub td { background: rgba(63, 185, 80, 0.06); font-size: 11px; }
+body.estim-page .flash-msg {
+  position: fixed; bottom: 22px; right: 22px; z-index: 10000;
+  padding: 8px 14px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  background: var(--green); color: #001a1e; box-shadow: var(--shadow-sm);
+}
+body.estim-page .flash-msg.flash-err { background: var(--red); color: #fff; }
+body.estim-page .h-sep { width: 1px; height: 22px; background: var(--border); margin: 0 6px; }
+
+/* Estimation — inclusion chapitre, ratios, phase (En charge du lot électricité) */
+body.estim-page .estim-chap-cb-wrap,
+body.estim-page .estim-sec-cb-wrap {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 2px;
+  flex-shrink: 0;
+}
+body.estim-page .estim-chap-cb,
+body.estim-page .estim-sec-cb {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-b);
+  cursor: pointer;
+}
+body.estim-page .row-chap.chap-excluded .chap-label,
+body.estim-page .row-chap.chap-excluded .chap-meta {
+  opacity: 0.55;
+}
+body.estim-page .row-chap.chap-excluded {
+  opacity: 0.92;
+}
+body.estim-page .row-sec.chap-excluded {
+  opacity: 0.55;
+}
+body.estim-page .row-sec.sec-excluded .sec-label,
+body.estim-page .row-sec.sec-excluded .sec-count {
+  opacity: 0.55;
+}
+body.estim-page .row-sec.sec-excluded {
+  opacity: 0.92;
+}
+body.estim-page .row-art.row-art-muted {
+  opacity: 0.42;
+}
+body.estim-page .chap-ratio-chip {
+  font-size: 10px;
+  color: var(--accent-y);
+  margin-left: 8px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+body.estim-page .line-unit-ratio {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: 4px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+body.estim-page .estim-phase-row {
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+body.estim-page .estim-phase-range {
+  width: 128px;
+  accent-color: var(--accent-b);
+  cursor: pointer;
+  vertical-align: middle;
+}
+body.estim-page .estim-phase-lbl {
+  font-size: 11px;
+  color: var(--num-total);
+  min-width: 54px;
+  font-family: 'IBM Plex Mono', monospace;
 }
