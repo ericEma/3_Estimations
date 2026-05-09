@@ -1,0 +1,390 @@
+{% extends 'base.html' %}
+{% block title %}Revue Matching{% endblock %}
+
+{% block head %}
+<style>
+/* ─── Variables ──────────────────────────────────────────────────────────── */
+:root {
+  --mv-border:   rgba(255,255,255,.08);
+  --mv-row-alt:  rgba(255,255,255,.025);
+  --mv-exclu-bg: rgba(100,100,100,.10);
+  --mv-exclu-fg: #666;
+  --cfo:   #804A3D;
+  --cfa:   #24A9B5;
+  --pv:    #a8cc08;
+  --ok:    #3fb950;
+  --warn:  #d29922;
+  --danger:#f85149;
+}
+
+/* ─── Layout page ────────────────────────────────────────────────────────── */
+.mv-page { display:flex; flex-direction:column; height:100%; gap:0; }
+
+/* ─── Header barre ───────────────────────────────────────────────────────── */
+.mv-header {
+  display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+  padding:14px 20px;
+  background:rgba(0,0,0,.25);
+  border-bottom:1px solid var(--mv-border);
+  flex-shrink:0;
+}
+.mv-header h2 { margin:0; font-size:15px; font-weight:700; color:var(--accent); white-space:nowrap; }
+.mv-header .mv-meta { display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+.mv-meta-item { display:flex; align-items:center; gap:6px; font-size:12px; color:#aaa; }
+.mv-meta-item label { color:#ccc; font-weight:600; }
+.mv-meta-item input[type=date], .mv-meta-item input[type=number] {
+  background:#1a2d38; border:1px solid rgba(255,255,255,.15); border-radius:4px;
+  color:#eee; padding:4px 8px; font-size:12px; width:130px;
+}
+.mv-meta-item input:focus { outline:none; border-color:var(--accent2); }
+
+.btn-validate {
+  margin-left:auto; padding:8px 18px;
+  background:var(--accent); color:#09212c; font-weight:700; font-size:13px;
+  border:none; border-radius:5px; cursor:pointer; white-space:nowrap;
+  transition:opacity .15s;
+}
+.btn-validate:hover { opacity:.85; }
+.btn-validate:disabled { opacity:.4; cursor:default; }
+
+/* Selector projet */
+.mv-project-selector {
+  display:flex; align-items:center; gap:10px;
+  padding:20px;
+}
+.mv-project-selector select {
+  background:#1a2d38; border:1px solid rgba(255,255,255,.2); border-radius:5px;
+  color:#eee; padding:8px 12px; font-size:13px; min-width:280px;
+}
+.mv-project-selector .btn-go {
+  padding:8px 14px; background:var(--accent2); color:#fff;
+  border:none; border-radius:5px; cursor:pointer; font-weight:600; font-size:13px;
+}
+
+/* ─── Contenu scrollable ─────────────────────────────────────────────────── */
+.mv-body {
+  flex:1; overflow-y:auto; padding:16px 20px; display:flex; flex-direction:column; gap:20px;
+}
+
+/* ─── Chapitre ───────────────────────────────────────────────────────────── */
+.mv-chapter { border:1px solid var(--mv-border); border-radius:8px; overflow:hidden; }
+.mv-chapter-header {
+  display:flex; align-items:center; gap:10px; padding:10px 14px;
+  background:rgba(0,0,0,.3); cursor:pointer; user-select:none;
+}
+.mv-chapter-header:hover { background:rgba(0,0,0,.4); }
+.mv-chapter-title { font-weight:700; font-size:14px; color:#e8e8e8; flex:1; }
+.mv-chapter-toggle { color:#888; font-size:12px; transition:transform .2s; }
+.mv-chapter-header.collapsed .mv-chapter-toggle { transform:rotate(-90deg); }
+
+/* ─── Section ────────────────────────────────────────────────────────────── */
+.mv-section { border-top:1px solid var(--mv-border); }
+.mv-section-header {
+  display:flex; align-items:center; gap:12px; padding:7px 14px;
+  background:rgba(255,255,255,.03); font-size:12px;
+}
+.mv-section-name { font-weight:600; color:#ccc; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mv-section-kpi  { display:flex; gap:14px; }
+.kpi-item { display:flex; gap:4px; align-items:center; white-space:nowrap; }
+.kpi-label { color:#777; font-size:11px; }
+.kpi-value { color:#bbb; font-weight:600; font-size:12px; }
+.kpi-ratio { color:var(--accent2); }
+
+/* ─── Table ──────────────────────────────────────────────────────────────── */
+.mv-table-wrap { overflow-x:auto; }
+table.mv-table {
+  width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed;
+}
+.mv-table th {
+  padding:6px 8px; text-align:left; color:#888; font-weight:600; font-size:11px;
+  border-bottom:1px solid var(--mv-border); white-space:nowrap; background:rgba(0,0,0,.15);
+  position:sticky; top:0; z-index:2;
+}
+.mv-table td {
+  padding:5px 8px; border-bottom:1px solid rgba(255,255,255,.04);
+  vertical-align:middle; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.mv-table tr:nth-child(even) td { background:var(--mv-row-alt); }
+.mv-table tr:hover td { background:rgba(255,255,255,.05) !important; }
+
+/* Widths */
+.col-desig   { width:220px; }
+.col-unit    { width:46px; text-align:center; }
+.col-qty     { width:60px; text-align:right; }
+.col-pu-dev  { width:80px; text-align:right; }
+.col-tot-dev { width:88px; text-align:right; }
+.col-base    { width:200px; }
+.col-pu-base { width:80px; text-align:right; }
+.col-pu-wp   { width:90px; text-align:right; }
+.col-ecart   { width:64px; text-align:right; }
+.col-actions { width:80px; text-align:center; }
+
+/* ─── Ligne exclue ───────────────────────────────────────────────────────── */
+tr.mv-excluded td { background:var(--mv-exclu-bg) !important; color:var(--mv-exclu-fg); }
+tr.mv-excluded .cell-desig-text { text-decoration:line-through; }
+tr.mv-excluded .col-tot-dev { color:#5a5a5a !important; }
+
+/* ─── Badges lot ─────────────────────────────────────────────────────────── */
+.lot-badge {
+  display:inline-block; padding:1px 6px; border-radius:3px;
+  font-size:10px; font-weight:700; letter-spacing:.5px;
+}
+.lot-CFO { background:rgba(128,74,61,.3); color:#e8917d; border:1px solid rgba(128,74,61,.4); }
+.lot-CFA { background:rgba(36,169,181,.2); color:#60d0da; border:1px solid rgba(36,169,181,.3); }
+.lot-PV  { background:rgba(168,204,8,.2);  color:#c8e832; border:1px solid rgba(168,204,8,.3); }
+
+/* ─── Status badge ───────────────────────────────────────────────────────── */
+.status-badge {
+  display:inline-block; padding:1px 6px; border-radius:3px;
+  font-size:10px; font-weight:600;
+}
+.status-auto     { background:rgba(63,185,80,.15); color:#3fb950; }
+.status-manual   { background:rgba(213,243,17,.15); color:var(--accent); }
+.status-pending  { background:rgba(210,153,34,.15); color:#d29922; }
+.status-excluded { background:rgba(100,100,100,.2); color:#777; }
+
+/* ─── Sélecteur base ─────────────────────────────────────────────────────── */
+.btn-selector {
+  display:flex; align-items:center; gap:6px; width:100%;
+  background:none; border:1px solid rgba(255,255,255,.1); border-radius:4px;
+  color:#ccc; padding:3px 8px; cursor:pointer; font-size:11px; text-align:left;
+  transition:border-color .15s;
+}
+.btn-selector:hover { border-color:var(--accent2); color:#eee; }
+.btn-selector.mapped { border-color:rgba(63,185,80,.3); color:#a8f5b5; }
+.btn-selector .sel-text { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.btn-selector .sel-icon { font-size:10px; color:#666; flex-shrink:0; }
+
+/* ─── PU calculé + tooltip ───────────────────────────────────────────────── */
+.pu-wp-cell { position:relative; }
+.pu-wp-val  { display:inline-flex; align-items:center; gap:4px; cursor:default; }
+.pu-wp-val.has-data { border-bottom:1px dashed rgba(255,255,255,.25); }
+.conf-dot {
+  width:7px; height:7px; border-radius:50%; display:inline-block; flex-shrink:0;
+}
+.conf-HIGH   { background:var(--ok); }
+.conf-MEDIUM { background:var(--warn); }
+.conf-LOW    { background:var(--danger); }
+.conf-NONE   { background:#555; }
+
+.mv-tooltip {
+  display:none; position:absolute; right:0; top:calc(100% + 4px); z-index:100;
+  background:#1e3040; border:1px solid rgba(255,255,255,.15); border-radius:6px;
+  padding:10px 12px; width:280px; font-size:11px; color:#ccc;
+  box-shadow:0 4px 16px rgba(0,0,0,.5);
+}
+.pu-wp-cell:hover .mv-tooltip { display:block; }
+.mv-tooltip table { width:100%; border-collapse:collapse; }
+.mv-tooltip td    { padding:2px 4px; }
+.mv-tooltip .t-label  { color:#888; }
+.mv-tooltip .t-val    { color:#eee; font-weight:600; text-align:right; }
+.mv-tooltip .t-result { color:var(--accent); font-weight:700; border-top:1px solid rgba(255,255,255,.1); }
+
+/* ─── % Écart ────────────────────────────────────────────────────────────── */
+.ecart-ok   { color:#aaa; }
+.ecart-warn { color:var(--warn); font-weight:600; }
+.ecart-bad  { color:var(--danger); font-weight:700; }
+
+/* ─── Actions ────────────────────────────────────────────────────────────── */
+.btn-exclu {
+  background:none; border:1px solid rgba(255,255,255,.12); border-radius:4px;
+  color:#888; font-size:11px; padding:2px 8px; cursor:pointer; transition:all .15s;
+}
+.btn-exclu:hover            { border-color:#d29922; color:#d29922; }
+.btn-exclu.is-excluded      { border-color:#555; color:#666; background:rgba(0,0,0,.2); }
+.btn-exclu.is-excluded:hover { border-color:var(--ok); color:var(--ok); }
+
+/* ─── Modal sélecteur ────────────────────────────────────────────────────── */
+.mv-modal-overlay {
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,.6);
+  z-index:1000; align-items:center; justify-content:center;
+}
+.mv-modal-overlay.open { display:flex; }
+.mv-modal {
+  background:#0e2535; border:1px solid rgba(255,255,255,.15); border-radius:10px;
+  width:640px; max-width:96vw; max-height:90vh; display:flex; flex-direction:column;
+  box-shadow:0 8px 32px rgba(0,0,0,.6);
+}
+.mv-modal-header {
+  display:flex; align-items:center; gap:10px; padding:14px 18px;
+  border-bottom:1px solid var(--mv-border); flex-shrink:0;
+}
+.mv-modal-header h3 { margin:0; font-size:14px; color:#eee; flex:1; }
+.btn-close-modal {
+  background:none; border:none; color:#888; font-size:18px; cursor:pointer; padding:0 4px;
+}
+.btn-close-modal:hover { color:#eee; }
+
+.mv-modal-body { padding:16px 18px; overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:12px; }
+
+.modal-line-info {
+  background:rgba(0,0,0,.2); border-radius:6px; padding:10px 12px; font-size:12px;
+}
+.modal-line-info .info-label { color:#888; font-size:11px; margin-bottom:2px; }
+.modal-line-info .info-desig { color:#ddd; font-weight:600; margin-bottom:6px; }
+.modal-line-info .info-clean { color:var(--accent2); font-size:11px; }
+
+.modal-search-wrap { position:relative; }
+.modal-search {
+  width:100%; background:#1a2d38; border:1px solid rgba(255,255,255,.15); border-radius:5px;
+  color:#eee; padding:8px 12px; font-size:13px; box-sizing:border-box;
+}
+.modal-search:focus { outline:none; border-color:var(--accent2); }
+
+.modal-candidates { display:flex; flex-direction:column; gap:4px; }
+.candidate-row {
+  display:flex; align-items:center; gap:10px; padding:8px 10px;
+  border:1px solid rgba(255,255,255,.06); border-radius:5px; cursor:pointer;
+  transition:background .12s, border-color .12s;
+}
+.candidate-row:hover  { background:rgba(255,255,255,.06); border-color:rgba(255,255,255,.15); }
+.candidate-row.selected { background:rgba(213,243,17,.08); border-color:rgba(213,243,17,.3); }
+.cand-score {
+  width:40px; font-size:11px; font-weight:700; text-align:center; flex-shrink:0;
+  padding:2px 0; border-radius:3px;
+}
+.score-high   { color:#3fb950; background:rgba(63,185,80,.12); }
+.score-medium { color:#d29922; background:rgba(210,153,34,.12); }
+.score-low    { color:#888;    background:rgba(120,120,120,.12); }
+.cand-info    { flex:1; min-width:0; }
+.cand-desig   { font-size:12px; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cand-meta    { display:flex; gap:8px; margin-top:2px; }
+.cand-pu      { font-size:11px; color:var(--accent2); font-weight:600; }
+.cand-unit    { font-size:11px; color:#777; }
+.cand-type    { font-size:10px; color:#666; }
+
+.modal-loading { text-align:center; padding:20px; color:#777; font-size:13px; }
+
+.mv-modal-footer {
+  padding:12px 18px; border-top:1px solid var(--mv-border); flex-shrink:0;
+  display:flex; align-items:center; gap:12px;
+}
+.mv-syn-check { display:flex; align-items:center; gap:8px; font-size:12px; color:#aaa; cursor:pointer; flex:1; }
+.mv-syn-check input { cursor:pointer; accent-color:var(--accent); }
+.mv-syn-check .syn-label { user-select:none; }
+.btn-confirm {
+  padding:8px 20px; background:var(--accent2); color:#fff; font-weight:700; font-size:13px;
+  border:none; border-radius:5px; cursor:pointer; transition:opacity .15s;
+}
+.btn-confirm:disabled { opacity:.4; cursor:default; }
+.btn-confirm:not(:disabled):hover { opacity:.85; }
+.btn-cancel-modal {
+  padding:8px 14px; background:rgba(255,255,255,.06); color:#ccc; font-size:13px;
+  border:1px solid rgba(255,255,255,.1); border-radius:5px; cursor:pointer;
+}
+
+/* ─── Zone vide ──────────────────────────────────────────────────────────── */
+.mv-empty { text-align:center; padding:40px; color:#666; font-size:14px; }
+.mv-empty a { color:var(--accent2); text-decoration:none; }
+
+/* ─── Toast ──────────────────────────────────────────────────────────────── */
+.mv-toast {
+  position:fixed; bottom:24px; right:24px; z-index:2000;
+  background:#1e3040; border:1px solid rgba(255,255,255,.15); border-radius:7px;
+  padding:10px 16px; font-size:13px; color:#eee; box-shadow:0 4px 16px rgba(0,0,0,.4);
+  opacity:0; transform:translateY(8px); transition:all .25s;
+  pointer-events:none;
+}
+.mv-toast.show { opacity:1; transform:translateY(0); }
+.mv-toast.ok   { border-color:rgba(63,185,80,.4); }
+.mv-toast.err  { border-color:rgba(248,81,73,.4); color:#f89893; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="mv-page">
+
+  {% if not project_id %}
+  <!-- ── Sélecteur de projet ──────────────────────────────────────────────── -->
+  <div class="mv-project-selector">
+    <label style="color:#aaa;font-size:13px">Projet à réviser :</label>
+    <select id="sel-project">
+      <option value="">— Sélectionner un projet —</option>
+      {% for p in projects %}
+      <option value="{{ p.id }}">{{ p.name }}  ({{ p.devis_date or '?' }}  —  {{ p.surface_sdo or '?' }} m²)</option>
+      {% endfor %}
+    </select>
+    <button class="btn-go" onclick="goProject()">Ouvrir →</button>
+  </div>
+  {% if not projects %}
+  <div class="mv-empty">
+    Aucun devis importé. <a href="{{ url_for('import_page') }}">Importer un devis →</a>
+  </div>
+  {% endif %}
+
+  {% else %}
+  <!-- ── Header cockpit ─────────────────────────────────────────────────── -->
+  <div class="mv-header">
+    <h2 id="mv-title">⚙ Revue Matching — chargement…</h2>
+    <div class="mv-meta">
+      <div class="mv-meta-item">
+        <label>Date devis :</label>
+        <input type="date" id="inp-devis-date" value="{{ project.devis_date or today }}" required>
+      </div>
+      <div class="mv-meta-item">
+        <label>SDO :</label>
+        <input type="number" id="inp-sdo" value="{{ project.surface_sdo or 1000 }}" min="1" style="width:90px">
+        <span style="font-size:11px;color:#888">m²</span>
+      </div>
+      <div id="mv-stats" style="font-size:11px;color:#888"></div>
+    </div>
+    <button class="btn-validate" id="btn-validate" disabled onclick="validateProject()">
+      ✓ Valider et intégrer
+    </button>
+  </div>
+
+  <!-- ── Corps scrollable ──────────────────────────────────────────────────── -->
+  <div class="mv-body" id="mv-body">
+    <div class="mv-empty" id="mv-loading" style="color:#aaa">
+      ⏳ Chargement des données de matching…
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+
+<!-- ── Modal sélecteur contextuel ────────────────────────────────────────── -->
+<div class="mv-modal-overlay" id="modal-overlay">
+  <div class="mv-modal">
+    <div class="mv-modal-header">
+      <h3>Sélectionner un article base</h3>
+      <span id="modal-lot-badge"></span>
+      <button class="btn-close-modal" onclick="closeModal()">✕</button>
+    </div>
+    <div class="mv-modal-body">
+      <div class="modal-line-info">
+        <div class="info-label">Désignation devis (brute)</div>
+        <div class="info-desig" id="modal-raw-desig">—</div>
+        <div class="info-clean" id="modal-clean-desig"></div>
+      </div>
+      <div class="modal-search-wrap">
+        <input type="text" class="modal-search" id="modal-search"
+               placeholder="Filtrer les candidats…" oninput="filterCandidates()">
+      </div>
+      <div class="modal-candidates" id="modal-candidates">
+        <div class="modal-loading">Chargement…</div>
+      </div>
+    </div>
+    <div class="mv-modal-footer">
+      <label class="mv-syn-check" id="syn-check-wrap" title="Enrichit la table synonyms pour améliorer le matching futur">
+        <input type="checkbox" id="chk-memorize">
+        <span class="syn-label">📚 Mémoriser comme synonyme</span>
+      </label>
+      <button class="btn-cancel-modal" onclick="closeModal()">Annuler</button>
+      <button class="btn-confirm" id="btn-confirm" disabled onclick="confirmSelection()">
+        Appliquer →
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="mv-toast" id="mv-toast"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const PROJECT_ID = {{ project_id or 'null' }};
+</script>
+<script src="{{ url_for('static', filename='js/matching.js') }}"></script>
+{% endblock %}

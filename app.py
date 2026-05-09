@@ -737,6 +737,258 @@ def api_projects():
 
 _last_heartbeat     = None                  # None = aucun heartbeat reçu
 _heartbeat_lock     = threading.Lock()
+# ─── Matching Cockpit — Lot 3 ────────────────────────────────────────────────
+
+@app.route('/matching')
+@app.route('/matching/<int:project_id>')
+def matching_view(project_id=None):
+    projects   = models.get_projects_list()
+    categories = models.get_categories()
+    project    = None
+    if project_id:
+        conn = models.get_db()
+        row = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        conn.close()
+        project = dict(row) if row else None
+    return render_template('matching_view.html',
+                           projects=projects,
+                           categories=categories,
+                           project=project,
+                           project_id=project_id,
+                           today=date.today().isoformat())
+
+
+@app.route('/api/matching/<int:project_id>/data')
+def matching_data(project_id):
+    from utils import calculate_weighted_price, get_effective_date
+
+    conn = models.get_db()
+    try:
+        project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not project:
+            return jsonify({'error': 'Projet introuvable'}), 404
+        project = dict(project)
+        devis_date = project.get('devis_date')
+        sdo        = project.get('surface_sdo') or 1000.0
+
+        rows = conn.execute("""
+            SELECT dl.id, dl.original_designation, dl.unit, dl.quantity,
+                   dl.unit_price_ht, dl.total_ht, dl.mapping_status,
+                   dl.mapping_score, dl.row_type, dl.context_path, dl.lot,
+                   dl.dpgf_article_id,
+                   da.designation  AS base_designation,
+                   da.pu_ht_ref    AS base_pu,
+                   da.unit         AS base_unit,
+                   da.last_updated AS base_last_updated
+            FROM devis_lines dl
+            LEFT JOIN dpgf_articles da ON dl.dpgf_article_id = da.id
+            WHERE dl.project_id = ?
+            ORDER BY dl.id
+        """, (project_id,)).fetchall()
+
+        # ── Groupe par chapitre / section ────────────────────────────────────
+        chapters_order = []
+        chapters_map   = {}
+
+        def _derive_lot(chapter_txt):
+            c = (chapter_txt or '').lower()
+            if 'faible' in c or 'cfa' in c or 'ssi' in c:
+                return 'CFA'
+            if 'photo' in c or 'pv' in c:
+                return 'PV'
+            return 'CFO'
+
+        for row in rows:
+            r = dict(row)
+            ctx    = (r.get('context_path') or '').split(' > ')
+            chap   = ctx[0].strip() if ctx else '—'
+            sec    = ctx[1].strip() if len(ctx) > 1 else '—'
+            lot    = (r.get('lot') or _derive_lot(chap)).upper()
+            r['lot'] = lot
+
+            # Prix pondéré si ligne déjà mappée
+            r['weighted_price'] = None
+            r['wp_tooltip']     = None
+            r['ecart_pct']      = None
+            if r.get('dpgf_article_id') and r.get('unit_price_ht') and r.get('base_pu'):
+                eff_date = get_effective_date(conn, r['dpgf_article_id'])
+                wp = calculate_weighted_price(
+                    base_price=r['base_pu'],
+                    base_date=eff_date,
+                    devis_price=r['unit_price_ht'],
+                    devis_date=devis_date,
+                )
+                r['weighted_price'] = wp.get('weighted_price')
+                r['wp_tooltip']     = wp
+                if wp.get('weighted_price') and r['unit_price_ht']:
+                    r['ecart_pct'] = round(
+                        (wp['weighted_price'] - r['unit_price_ht']) / r['unit_price_ht'] * 100, 1
+                    )
+
+            if chap not in chapters_map:
+                chapters_order.append(chap)
+                chapters_map[chap] = {}
+            if sec not in chapters_map[chap]:
+                chapters_map[chap][sec] = []
+            chapters_map[chap][sec].append(r)
+
+        # ── Calcul ratios par section (RÈGLE D'OR : inclut lignes exclues) ──
+        result = []
+        for chap in chapters_order:
+            chap_lot     = _derive_lot(chap)
+            chap_sections = []
+            for sec, lines in chapters_map[chap].items():
+                total_ht_sec = sum(
+                    (l.get('total_ht') or 0)
+                    for l in lines if l['row_type'] == 'article'
+                )
+                ratio_m2 = round(total_ht_sec / sdo, 2) if sdo > 0 else 0
+                chap_sections.append({
+                    'name':     sec,
+                    'lines':    lines,
+                    'total_ht': round(total_ht_sec, 2),
+                    'ratio_m2': ratio_m2,
+                })
+            result.append({'name': chap, 'lot': chap_lot, 'sections': chap_sections})
+
+        return jsonify({'project': project, 'chapters': result, 'sdo': sdo})
+    finally:
+        conn.close()
+
+
+@app.route('/api/matching/line/<int:line_id>/candidates')
+def matching_line_candidates(line_id):
+    from engine_matching import find_best_match
+
+    conn = models.get_db()
+    try:
+        line = conn.execute(
+            "SELECT original_designation, lot FROM devis_lines WHERE id=?", (line_id,)
+        ).fetchone()
+        if not line:
+            return jsonify({'error': 'Ligne introuvable'}), 404
+        lot        = (line['lot'] or 'CFO').upper()
+        candidates = find_best_match(conn, line['original_designation'] or '', lot, top_n=5)
+        return jsonify({'candidates': candidates})
+    finally:
+        conn.close()
+
+
+@app.route('/api/matching/line/<int:line_id>/select', methods=['POST'])
+def matching_line_select(line_id):
+    from utils import calculate_weighted_price, get_effective_date
+
+    data            = request.get_json(force=True)
+    dpgf_article_id = data.get('dpgf_article_id')
+    memorize        = data.get('memorize_synonym', False)
+    cleaned_term    = (data.get('cleaned_term') or '').strip()
+
+    if not dpgf_article_id:
+        return jsonify({'error': 'dpgf_article_id requis'}), 400
+
+    conn = models.get_db()
+    try:
+        conn.execute("""
+            UPDATE devis_lines
+            SET dpgf_article_id = ?, mapping_status = 'manual'
+            WHERE id = ?
+        """, (dpgf_article_id, line_id))
+
+        if memorize and cleaned_term:
+            article = conn.execute(
+                "SELECT designation FROM dpgf_articles WHERE id=?", (dpgf_article_id,)
+            ).fetchone()
+            if article:
+                conn.execute(
+                    "INSERT OR REPLACE INTO synonyms (original_term, mapped_term) VALUES (?,?)",
+                    (cleaned_term, article['designation'])
+                )
+
+        conn.commit()
+
+        # Recalcul prix pondéré
+        line    = conn.execute("SELECT * FROM devis_lines WHERE id=?", (line_id,)).fetchone()
+        article = conn.execute("SELECT * FROM dpgf_articles WHERE id=?", (dpgf_article_id,)).fetchone()
+        proj    = conn.execute(
+            "SELECT devis_date FROM projects WHERE id=?", (dict(line)['project_id'],)
+        ).fetchone()
+
+        result = {'status': 'ok', 'weighted_price': None, 'wp_tooltip': None, 'ecart_pct': None,
+                  'base_designation': None, 'base_pu': None}
+        if line and article and proj:
+            eff_date = get_effective_date(conn, dpgf_article_id)
+            wp = calculate_weighted_price(
+                base_price=article['pu_ht_ref'],
+                base_date=eff_date,
+                devis_price=line['unit_price_ht'],
+                devis_date=proj['devis_date'],
+            )
+            result['weighted_price']   = wp.get('weighted_price')
+            result['wp_tooltip']       = wp
+            result['base_designation'] = article['designation']
+            result['base_pu']          = article['pu_ht_ref']
+            if wp.get('weighted_price') and line['unit_price_ht']:
+                result['ecart_pct'] = round(
+                    (wp['weighted_price'] - line['unit_price_ht']) / line['unit_price_ht'] * 100, 1
+                )
+
+        return jsonify(result)
+    except Exception as exc:
+        conn.rollback()
+        return jsonify({'error': str(exc)}), 500
+    finally:
+        conn.close()
+
+
+@app.route('/api/matching/line/<int:line_id>/exclude', methods=['POST'])
+def matching_line_exclude(line_id):
+    conn = models.get_db()
+    try:
+        line = conn.execute(
+            "SELECT mapping_status FROM devis_lines WHERE id=?", (line_id,)
+        ).fetchone()
+        if not line:
+            return jsonify({'error': 'Ligne introuvable'}), 404
+        prev       = line['mapping_status']
+        new_status = 'auto' if prev == 'excluded' else 'excluded'
+        conn.execute("UPDATE devis_lines SET mapping_status=? WHERE id=?", (new_status, line_id))
+        conn.commit()
+        return jsonify({'status': 'ok', 'new_status': new_status})
+    finally:
+        conn.close()
+
+
+@app.route('/api/matching/synonym', methods=['POST'])
+def matching_add_synonym():
+    data     = request.get_json(force=True)
+    original = (data.get('original_term') or '').strip()
+    mapped   = (data.get('mapped_term')   or '').strip()
+    if not original or not mapped:
+        return jsonify({'error': 'original_term et mapped_term requis'}), 400
+    conn = models.get_db()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO synonyms (original_term, mapped_term) VALUES (?,?)",
+            (original, mapped)
+        )
+        conn.commit()
+        return jsonify({'status': 'ok'})
+    finally:
+        conn.close()
+
+
+@app.route('/api/matching/<int:project_id>/validate', methods=['POST'])
+def matching_validate(project_id):
+    conn = models.get_db()
+    try:
+        conn.execute("UPDATE projects SET import_ok=1 WHERE id=?", (project_id,))
+        conn.commit()
+        return jsonify({'status': 'ok'})
+    finally:
+        conn.close()
+
+
+# ─── Watchdog ─────────────────────────────────────────────────────────────────
 _shutdown_requested = threading.Event()
 
 HEARTBEAT_TIMEOUT_S = 60   # arrêt si pas de heartbeat depuis X s (60 s : couvre le throttling navigateur en arrière-plan)
