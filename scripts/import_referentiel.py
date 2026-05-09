@@ -1,24 +1,24 @@
 """
 import_referentiel.py — Importation du fichier DPGF/Estimation Master dans dpgf_articles.
 
-Source cible   : 2_ Estimation_Modèle_ 09-05-2026.xlsx  (argument --file)
+Source cible   : 2_estimation_modele_09-05-2026.xlsx  (argument --file)
 Défaut fallback: 2_ DPGF_Modèle_ 10-04-2026.xlsx
 
-Structure attendue du fichier Excel :
-  Ligne d'en-tête contenant 'Art.' en colonne A.
-  Colonnes : Art. | Type ratio | Nature | DESIGNATION | U | Q MOE | Q entreprise | PU € HT | Montant € HT
-
-  Ligne chapitre : col A non vide, col B et C vides.
-  Ligne Titre    : col C == 'Titre'  → devient une section
-  Ligne Article  : col C == 'Article'
-  Ligne Sous-Total : col D commence par 'Sous-Total' → ignorée
-  Ligne vide     : toutes les colonnes utiles None → ignorée
+Règles d'extraction (v2 — 2026-05-09) :
+  - Nature='Titre'   → section courante (pas de ligne en DB)
+  - Nature='Article' → article importé
+  - Nature vide + DESIGNATION commence par '.' → .VARIANTE → normalisé en Article
+  - Nature vide + DESIGNATION sans '.' → importé si :
+      DESIGNATION non vide ET (PU > 0 OU Unité renseignée OU Nature='Article')
+  - Exclusions : "Sous-Total", "TVA", "TOTAL" (case-insensitive)
+  - Type ratio vide → UNITAIRE par défaut
+  - Reset affaires + affaire_lines intégré avant l'insertion
 
 Usage :
     python scripts/import_referentiel.py
-    python scripts/import_referentiel.py --file "2_ Estimation_Modèle_ 09-05-2026.xlsx"
-    python scripts/import_referentiel.py --file mon_fichier.xlsx --yes
-    python scripts/import_referentiel.py --dry-run   # prévisualise sans écrire
+    python scripts/import_referentiel.py --file "2_estimation_modele_09-05-2026.xlsx"
+    python scripts/import_referentiel.py --dry-run
+    python scripts/import_referentiel.py --yes
 
 Options :
     --file   <path>  Chemin du fichier Excel (absolu ou relatif au répertoire projet)
@@ -47,7 +47,12 @@ import models  # noqa: E402
 # ─── Constantes ───────────────────────────────────────────────────────────────
 
 _DEFAULT_FILE = "2_ DPGF_Modèle_ 10-04-2026.xlsx"
-_TARGET_FILE  = "2_ Estimation_Modèle_ 09-05-2026.xlsx"
+_TARGET_FILE  = "2_estimation_modele_09-05-2026.xlsx"
+
+# Mots-clés d'exclusion (casse-insensitive, sur la DESIGNATION)
+_EXCLUDE_KEYWORDS = ("sous-total", "tva", "total")
+# Mots acceptés malgré la présence de "total" dans le libellé (ex : "Total mensuel KVA")
+_EXCLUDE_WHITELIST = ()  # à enrichir si besoin
 
 # Chapitres reconnus (casse exacte telle qu'en BDD)
 _KNOWN_CHAPTERS = {"Courants Forts", "Courants faibles", "Photovoltaïque"}
@@ -64,44 +69,62 @@ def _lot_from_chapter(chapter: str) -> str:
 
 # ─── Parsing Excel ────────────────────────────────────────────────────────────
 
+def _is_excluded(desig: str) -> bool:
+    """True si la désignation doit être ignorée (Sous-Total, TVA, TOTAL…)."""
+    dl = desig.lower()
+    return any(kw in dl for kw in _EXCLUDE_KEYWORDS)
+
+
+def _parse_pu(val) -> float | None:
+    """Convertit une valeur cellule en float > 0, ou None."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        return f if f > 0 else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_qty(val) -> float | None:
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        return f if f >= 0 else None
+    except (ValueError, TypeError):
+        return None
+
+
 def _parse_excel(filepath: str) -> list[dict]:
-    """
-    Retourne une liste de dicts représentant les lignes utiles du fichier.
-    Chaque dict a les clés :
-        row_type      'chapter' | 'section' | 'article'
-        chapter       str
-        section       str | None
-        designation   str
-        ratio_type    'SURFACIQUE' | 'UNITAIRE' | None
-        unit          str | None
-        pu_ht_ref     float | None
-        qty_ref       float | None   (Q entreprise)
-        excel_row     int
+    """Retourne la liste des articles à importer depuis le fichier Excel.
+
+    Règles (v2) :
+    - Nature='Titre'       → mise à jour section courante, pas de ligne DB.
+    - Nature='Article'     → importé.
+    - Nature vide + désig  commence par '.' → .VARIANTE → normalisé Article.
+    - Nature vide + désig  sans '.'         → importé si :
+          désignation non vide ET (PU > 0 OU unité renseignée)
+    - Exclusions : mots-clés _EXCLUDE_KEYWORDS (sous-total, tva, total).
+    - Type ratio vide → UNITAIRE.
     """
     wb = openpyxl.load_workbook(filepath, data_only=True, read_only=True)
     ws = wb.active
-
     rows_raw = list(ws.iter_rows(values_only=True))
     wb.close()
 
-    result = []
-
-    # Trouver la ligne d'en-tête (colonne A == 'Art.')
+    # ── Trouver la ligne d'en-tête ────────────────────────────────────────────
     header_idx = None
     for i, row in enumerate(rows_raw):
         if row and str(row[0] or "").strip().lower() == "art.":
             header_idx = i
             break
-
     if header_idx is None:
-        raise ValueError(
-            "Impossible de trouver la ligne d'en-tête (colonne 'Art.'). "
-            "Vérifier le fichier source."
-        )
+        raise ValueError("Ligne d'en-tête 'Art.' introuvable. Vérifier le fichier source.")
 
-    # Map colonnes par nom d'en-tête
+    # ── Mapper les colonnes ───────────────────────────────────────────────────
     header = rows_raw[header_idx]
-    col = {}
+    col: dict[str, int] = {}
     for j, h in enumerate(header):
         if h is None:
             continue
@@ -118,121 +141,118 @@ def _parse_excel(filepath: str) -> list[dict]:
             col["unit"] = j
         elif "q entreprise" in hn:
             col["qty_ref"] = j
-        elif "q moe" in hn or "q moe" in hn:
-            col["qty_moe"] = j
         elif "pu" in hn and "ht" in hn:
             col["pu_ht"] = j
 
-    # Colonnes obligatoires minimum
     for req in ("art", "nature", "designation"):
         if req not in col:
-            raise ValueError(f"Colonne requise introuvable : '{req}'. En-tête : {header}")
+            raise ValueError(f"Colonne requise absente : '{req}'. En-tête : {header}")
 
+    def _cell(raw, key, default=None):
+        idx = col.get(key, -1)
+        if idx < 0 or idx >= len(raw):
+            return default
+        return raw[idx]
+
+    result = []
     current_chapter = None
     current_section = None
-    chapter_row_order = 0
-    section_row_order = 0
-    article_row_order = 0
+    order_global = 0
+    stats = {"titre": 0, "article_tagged": 0, "variante": 0, "untagged": 0,
+             "excluded": 0, "empty": 0}
 
-    for i, raw in enumerate(rows_raw[header_idx + 1 :], start=header_idx + 2):
-        art_val   = raw[col["art"]]         if len(raw) > col.get("art", 0)         else None
-        ratio_val = raw[col["ratio_type"]]  if len(raw) > col.get("ratio_type", 0)  else None
-        nature_v  = raw[col["nature"]]      if len(raw) > col.get("nature", 0)      else None
-        desig_v   = raw[col["designation"]] if len(raw) > col.get("designation", 0) else None
-        unit_v    = raw[col.get("unit", 99)] if len(raw) > col.get("unit", 99)      else None
-        pu_v      = raw[col["pu_ht"]]       if "pu_ht" in col and len(raw) > col["pu_ht"] else None
-        qty_v     = raw[col["qty_ref"]]     if "qty_ref" in col and len(raw) > col["qty_ref"] else None
+    for i, raw in enumerate(rows_raw[header_idx + 1:], start=header_idx + 2):
+        art_v    = _cell(raw, "art")
+        ratio_v  = _cell(raw, "ratio_type")
+        nature_v = _cell(raw, "nature")
+        desig_v  = _cell(raw, "designation")
+        unit_v   = _cell(raw, "unit")
+        pu_v     = _cell(raw, "pu_ht")
+        qty_v    = _cell(raw, "qty_ref")
 
-        art_str   = str(art_val).strip()   if art_val   is not None else ""
-        desig_str = str(desig_v).strip()   if desig_v   is not None else ""
-        nature_str= str(nature_v).strip()  if nature_v  is not None else ""
+        art_s    = str(art_v).strip()    if art_v    is not None else ""
+        desig_s  = str(desig_v).strip()  if desig_v  is not None else ""
+        nature_s = str(nature_v).strip() if nature_v is not None else ""
+        unit_s   = str(unit_v).strip()   if unit_v   is not None else ""
+        ratio_s  = str(ratio_v).strip()  if ratio_v  is not None else ""
 
-        # ── Lignes vides ─────────────────────────────────────────────────────
-        if not art_str and not desig_str and not nature_str:
+        # ── 1. Ligne entièrement vide ─────────────────────────────────────────
+        if not art_s and not desig_s and not nature_s and not unit_s:
+            stats["empty"] += 1
             continue
 
-        # ── Sous-Total → ignorer ─────────────────────────────────────────────
-        if desig_str.lower().startswith("sous-total"):
+        # ── 2. Exclusions (Sous-Total / TVA / TOTAL) ─────────────────────────
+        if desig_s and _is_excluded(desig_s):
+            stats["excluded"] += 1
             continue
 
-        # ── Ligne chapitre ───────────────────────────────────────────────────
-        # Col A non vide, col B (ratio) et col C (nature) vides → chapitre
-        if art_str and not ratio_val and not nature_v and desig_str == "":
-            # Le libellé chapitre est en col A
-            chapter_candidate = art_str
-            if chapter_candidate in _KNOWN_CHAPTERS:
-                current_chapter = chapter_candidate
+        # ── 3. Ligne chapitre (col A non vide, B et C vides, D vide) ─────────
+        if art_s and not ratio_v and not nature_v and not desig_s:
+            if art_s in _KNOWN_CHAPTERS:
+                current_chapter = art_s
                 current_section = None
-                chapter_row_order += 1
-                section_row_order = 0
-                article_row_order = 0
-            # Sinon : ligne de titre / commentaire → ignorer
+            # sinon : ligne de commentaire / texte legale → ignorer
             continue
 
-        # ── Section (Titre) ──────────────────────────────────────────────────
-        if nature_str == "Titre" and current_chapter:
-            current_section = desig_str
-            section_row_order += 1
-            article_row_order = 0
-            ratio_norm = _normalize_ratio_type(str(ratio_val or ""))
-            result.append({
-                "row_type":   "section",
-                "chapter":    current_chapter,
-                "section":    current_section,
-                "designation": desig_str,
-                "ratio_type": ratio_norm,
-                "unit":       str(unit_v).strip() if unit_v else None,
-                "pu_ht_ref":  None,
-                "qty_ref":    None,
-                "excel_row":  i,
-                "row_order":  section_row_order,
-            })
-            continue
+        # ── 4. Section / Titre ────────────────────────────────────────────────
+        if nature_s == "Titre" and current_chapter:
+            current_section = desig_s
+            stats["titre"] += 1
+            continue  # les sections ne sont pas insérées en DB (clé implicite)
 
-        # ── Article ──────────────────────────────────────────────────────────
-        if nature_str == "Article" and current_chapter:
-            if not desig_str:
-                continue  # désignation vide → ignorer
+        # ── Helpers communs ───────────────────────────────────────────────────
+        if not current_chapter:
+            continue  # on n'est pas encore entré dans un chapitre connu
 
-            article_row_order += 1
-            ratio_norm = _normalize_ratio_type(str(ratio_val or ""))
+        pu_float  = _parse_pu(pu_v)
+        qty_float = _parse_qty(qty_v)
+        ratio_norm = _normalize_ratio_type(ratio_s)
+        unit_clean = unit_s if unit_s else None
 
-            # PU : float ou None
-            pu_float = None
-            if pu_v is not None:
-                try:
-                    pu_float = float(pu_v)
-                    if pu_float <= 0:
-                        pu_float = None
-                except (ValueError, TypeError):
-                    pu_float = None
-
-            # Qty : float ou None
-            qty_float = None
-            if qty_v is not None:
-                try:
-                    qty_float = float(qty_v)
-                    if qty_float < 0:
-                        qty_float = None
-                except (ValueError, TypeError):
-                    qty_float = None
-
-            result.append({
+        def _make_article(designation: str, is_variante: bool = False) -> dict:
+            order_global  # non-local read — Python closure
+            return {
                 "row_type":    "article",
                 "chapter":     current_chapter,
                 "section":     current_section,
-                "designation": desig_str,
+                "designation": designation,
                 "ratio_type":  ratio_norm,
-                "unit":        str(unit_v).strip() if unit_v else None,
+                "unit":        unit_clean,
                 "pu_ht_ref":   pu_float,
                 "qty_ref":     qty_float,
                 "excel_row":   i,
-                "row_order":   article_row_order,
-                "code":        art_str if art_str else None,
-            })
+                "code":        art_s if art_s else None,
+                "is_variante": is_variante,
+            }
+
+        # ── 5. Article taggé (Nature='Article') ──────────────────────────────
+        if nature_s == "Article":
+            if not desig_s:
+                continue
+            # Normalisation : retire le '.' de tête si présent (cohérence DB)
+            desig_clean = desig_s.lstrip(".").strip() if desig_s.startswith(".") else desig_s
+            if not desig_clean:
+                continue
+            stats["article_tagged"] += 1
+            result.append(_make_article(desig_clean))
             continue
 
-    return result
+        # ── 6. .VARIANTE (désignation commence par '.') → normalisé Article ──
+        if desig_s.startswith("."):
+            desig_clean = desig_s.lstrip(".").strip()
+            if not desig_clean:
+                continue
+            stats["variante"] += 1
+            result.append(_make_article(desig_clean, is_variante=True))
+            continue
+
+        # ── 7. Ligne non-taggée : filtre DESIGNATION + (PU > 0 OU unité) ─────
+        if desig_s and (pu_float is not None or unit_clean):
+            stats["untagged"] += 1
+            result.append(_make_article(desig_s))
+            continue
+
+    return result, stats
 
 
 def _normalize_ratio_type(val: str) -> str:
@@ -475,37 +495,60 @@ def main():
     # ── Parsing ──────────────────────────────────────────────────────────────
     print("Lecture du fichier Excel…")
     try:
-        rows = _parse_excel(filepath)
+        rows, stats = _parse_excel(filepath)
     except Exception as exc:
         sys.exit(f"Erreur lecture Excel : {exc}")
 
-    sections  = [r for r in rows if r["row_type"] == "section"]
-    articles  = [r for r in rows if r["row_type"] == "article"]
-    by_chap   = {}
+    articles = rows  # _parse_excel ne retourne que des articles désormais
+    by_lot   = {"CFO": 0, "CFA": 0, "PV": 0}
+    by_chap  = {}
+    variantes = [r for r in articles if r.get("is_variante")]
     for r in articles:
+        lot = _lot_from_chapter(r["chapter"])
+        by_lot[lot] = by_lot.get(lot, 0) + 1
         by_chap.setdefault(r["chapter"], 0)
         by_chap[r["chapter"]] += 1
 
-    print(f"  Sections  : {len(sections)}")
-    print(f"  Articles  : {len(articles)}")
+    print(f"  Titres/sections (méta)       : {stats['titre']}")
+    print(f"  Articles Nature='Article'    : {stats['article_tagged']}")
+    print(f"  Articles .VARIANTE normalisés: {stats['variante']}")
+    print(f"  Articles non-taggés (filtrés): {stats['untagged']}")
+    print(f"  Lignes exclues (sous-tot/TVA): {stats['excluded']}")
+    print(f"  Lignes vides                 : {stats['empty']}")
+    print(f"  ─────────────────────────────")
+    print(f"  TOTAL à importer             : {len(articles)}")
+    print()
+    print("  Répartition par chapitre :")
     for ch, n in by_chap.items():
-        print(f"    {ch} : {n} articles")
+        lot = _lot_from_chapter(ch)
+        print(f"    [{lot}] {ch} : {n} articles")
+    print()
+    print("  Répartition par LOT :")
+    for lot, n in by_lot.items():
+        print(f"    {lot} : {n}")
     print()
 
-    if not rows:
-        sys.exit("Aucune ligne utile trouvée dans le fichier. Vérifier la structure.")
+    if not articles:
+        sys.exit("Aucun article à importer. Vérifier la structure du fichier.")
 
     if args.dry_run:
+        # Vérification lignes 37-40 (R037-R040 Excel)
+        target_rows = [r for r in articles if r["excel_row"] in (37, 38, 39, 40)]
+        if target_rows:
+            print("Vérification R037-R040 (Postes de transformation) :")
+            for r in target_rows:
+                flag = ".VARIANTE normalisé" if r.get("is_variante") else "Article taggé"
+                print(f"  R{r['excel_row']:03d} [{flag}] {r['designation'][:55]} | pu={r['pu_ht_ref']}")
+        print()
         print("DRY-RUN — rien n'a été écrit en base.")
         return
 
     # ── Confirmation ─────────────────────────────────────────────────────────
     if not args.yes:
         print("Cette opération va :")
-        print("  1. Supprimer tous les articles PSA master (is_custom=0) existants")
-        print("     et leurs dépendances (ratio_overrides, mapping_synonyms, affaire_lines PSA)")
-        print("  2. Insérer les nouvelles lignes")
-        print("  3. Ajouter/vérifier colonne last_updated + table synonyms")
+        print("  1. Vider affaires + affaire_lines (reset sécurisé)")
+        print("  2. Supprimer tous les articles PSA master (is_custom=0)")
+        print("  3. Insérer les nouvelles lignes depuis le fichier source")
         print()
         rep = input("Confirmer ? (oui / non) : ").strip().lower()
         if rep not in ("oui", "o", "yes", "y"):
@@ -518,23 +561,63 @@ def main():
         _ensure_last_updated_column(conn)
         _ensure_synonyms_table(conn)
 
-        print("Suppression des articles PSA existants…")
+        # Reset affaires + affaire_lines (sécurité intégrée — building_categories intact)
+        print("Reset affaires / affaire_lines…")
+        conn.execute("PRAGMA foreign_keys = OFF")
+        for tbl in ("affaire_lines", "affaire_chapter_settings",
+                    "ratio_overrides", "affaires",
+                    "bibliotheque_section_ratios"):
+            try:
+                n = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+                if n:
+                    conn.execute(f"DELETE FROM {tbl}")
+                    conn.execute("DELETE FROM sqlite_sequence WHERE name=?", (tbl,))
+                    print(f"  {tbl:<35} {n} lignes supprimées")
+            except Exception:
+                pass
+        conn.execute("PRAGMA foreign_keys = ON")
+
+        print("Suppression articles PSA existants…")
         n_deleted = _clear_referentiel_psa(conn)
         print(f"  {n_deleted} articles supprimés.")
 
         print("Insertion des nouvelles lignes…")
-        counts = _insert_rows(conn, rows, ref_date)
+        counts = _insert_rows(conn, articles, ref_date)
         conn.commit()
 
-        print(f"  Sections (méta, non insérées) : {counts['section_skipped']}")
-        print(f"  Articles insérés              : {counts['article']}")
+        print(f"  Articles insérés : {counts['article']}")
         print()
 
-        # Vérification rapide
+        # ── Rapport de conformité ─────────────────────────────────────────────
+        print("=" * 50)
+        print("  RAPPORT DE CONFORMITÉ")
+        print("=" * 50)
+        for lot in ("CFO", "CFA", "PV"):
+            n = conn.execute(
+                "SELECT COUNT(*) FROM dpgf_articles "
+                "WHERE COALESCE(is_custom,0)=0 AND lot=?", (lot,)
+            ).fetchone()[0]
+            print(f"  LOT {lot} : {n} articles")
         total_db = conn.execute(
-            "SELECT COUNT(*) FROM dpgf_articles WHERE COALESCE(is_custom, 0) = 0"
+            "SELECT COUNT(*) FROM dpgf_articles WHERE COALESCE(is_custom,0)=0"
         ).fetchone()[0]
-        print(f"Total PSA en base   : {total_db}")
+        print(f"  TOTAL PSA : {total_db}")
+        print()
+
+        # Vérification R037-R040
+        print("Vérification lignes R037–R040 (Postes de transformation) :")
+        check = conn.execute(
+            """SELECT excel_row_num, designation, ratio_type, lot, pu_ht_ref, last_updated
+               FROM dpgf_articles
+               WHERE excel_row_num IN (37,38,39,40) AND COALESCE(is_custom,0)=0
+               ORDER BY excel_row_num"""
+        ).fetchall()
+        if check:
+            for r in check:
+                print(f"  R{r[0]:03d} | lot={r[3]} | ratio={r[2]} | pu={r[4]} | {r[1][:50]}")
+        else:
+            print("  (aucune ligne R037-R040 trouvée en base)")
+
         print()
         print("Import terminé avec succès.")
 
