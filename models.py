@@ -320,6 +320,10 @@ def ensure_app_tables():
             "ALTER TABLE dpgf_articles ADD COLUMN is_hidden INTEGER DEFAULT 0",
             # Sprint 9.3 — unité du ratio de section (m2 ou kwc pour PV)
             "ALTER TABLE bibliotheque_section_ratios ADD COLUMN ratio_unit TEXT DEFAULT 'm2'",
+            # Lot 1 — traçabilité temporelle : date de la dernière MàJ de l'article
+            "ALTER TABLE dpgf_articles ADD COLUMN last_updated DATE",
+            # Lot 1 — colonne lot sur dpgf_articles (CFO/CFA/PV déduit du chapitre)
+            "ALTER TABLE dpgf_articles ADD COLUMN lot TEXT",
         ]
         for sql in _migrations:
             try:
@@ -353,6 +357,18 @@ def ensure_app_tables():
 
         # Sprint 9.4 — lignes hors catalogue (dpgf_article_id NULL + métadonnées)
         _migrate_affaire_lines_hors_catalogue(conn)
+
+        # Lot 1 — table synonymes simple (original_term → mapped_term)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS synonyms (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_term TEXT NOT NULL,
+                mapped_term   TEXT NOT NULL,
+                created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(original_term)
+            )
+        """)
+        conn.commit()
     finally:
         conn.close()
 
