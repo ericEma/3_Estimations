@@ -1215,6 +1215,7 @@ def get_bibliotheque_data(affaire_id=None) -> dict:
                 SELECT da.id, da.chapter, da.section, da.designation, da.unit,
                        da.ratio_type, da.row_order,
                        da.is_custom, da.qty_ref,
+                       da.lot, da.last_updated,
                        COALESCE(ro.pu_override, al.unit_price_ht) AS pu_ht,
                        al.quantity, al.total_ht, al.is_included,
                        ro.pu_override IS NOT NULL AS has_override,
@@ -1225,13 +1226,14 @@ def get_bibliotheque_data(affaire_id=None) -> dict:
                 LEFT JOIN ratio_overrides ro ON ro.dpgf_article_id = da.id
                 WHERE da.row_type = 'article'
                   AND (da.is_hidden IS NULL OR da.is_hidden = 0)
-                ORDER BY da.row_order
+                ORDER BY da.chapter, da.row_order
             """, (affaire_id,)).fetchall()
         else:
             rows = conn.execute("""
                 SELECT da.id, da.chapter, da.section, da.designation, da.unit,
                        da.ratio_type, da.row_order,
                        da.is_custom, da.qty_ref,
+                       da.lot, da.last_updated,
                        COALESCE(ro.pu_override, da.pu_ht_ref) AS pu_ht,
                        da.qty_ref AS quantity, NULL AS total_ht, 1 AS is_included,
                        ro.pu_override IS NOT NULL AS has_override,
@@ -1240,7 +1242,7 @@ def get_bibliotheque_data(affaire_id=None) -> dict:
                 LEFT JOIN ratio_overrides ro ON ro.dpgf_article_id = da.id
                 WHERE da.row_type = 'article'
                   AND (da.is_hidden IS NULL OR da.is_hidden = 0)
-                ORDER BY da.row_order
+                ORDER BY da.chapter, da.row_order
             """).fetchall()
 
         # Ratios par section (overrides manuels bibliothèque) — include ratio_unit (Sprint 9.3)

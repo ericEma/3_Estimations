@@ -484,13 +484,21 @@ def bibliotheque(affaire_id=None):
     except Exception:
         pass
 
+    articles = data['articles']
+    nb_articles = len(articles)
+    nb_chapitres = len({a['chapter'] for a in articles if a.get('chapter')})
+    nb_sections  = len({(a['chapter'], a['section']) for a in articles if a.get('section')})
+
     return render_template(
         'bibliotheque.html',
         affaires=data['affaires'],
-        articles_json=json.dumps(data['articles'], ensure_ascii=False),
+        articles_json=json.dumps(articles, ensure_ascii=False),
         sec_ratios_json=json.dumps(data.get('sec_ratios', {}), ensure_ascii=False),
         affaire_id=affaire_id,
         affaire_courante=affaire_courante,
+        nb_articles=nb_articles,
+        nb_chapitres=nb_chapitres,
+        nb_sections=nb_sections,
     )
 
 

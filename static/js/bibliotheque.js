@@ -332,6 +332,7 @@ function render() {
                 onclick="startEdit(this,event)">
               ${esc(a.designation)}
               <span class="ratio-tag ${a.ratio_type === 'SURFACIQUE' ? 'ratio-surf' : 'ratio-unit'}">${a.ratio_type === 'SURFACIQUE' ? 'S' : 'U'}</span>
+              ${a.lot ? `<span class="lot-tag lot-${a.lot}">${a.lot}</span>` : ''}
               ${isNew ? '<span class="custom-tag">NEW</span>' : (a.is_custom ? '<span class="custom-tag">CUSTOM</span>' : '')}
             </td>
             <td class="art-unit-cell editable ${manualCls}" data-id="${a.id}" data-field="unit"
@@ -836,6 +837,10 @@ function openPanel(a) {
     <div class="rp-banner ${cm.banner}">
       <div class="rp-banner-chap">${esc(a.chapter)} — ${esc(a.section)}</div>
       <div class="rp-banner-desig">${esc(a.designation)}</div>
+      <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        ${a.lot ? `<span class="lot-tag lot-${a.lot}" style="font-size:10px">${a.lot}</span>` : ''}
+        ${a.last_updated ? `<span style="font-size:10px;color:rgba(255,255,255,.5)">Mis à jour : ${a.last_updated}</span>` : ''}
+      </div>
     </div>
 
     <div class="rp-sec-lbl">Prix unitaire HT</div>

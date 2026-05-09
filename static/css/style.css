@@ -1368,6 +1368,10 @@ tr.row-sec:hover .sec-del-btn { display:inline-flex; }
 .dup-btn:hover { background:rgba(61,190,114,.12); color:#3dbe72; }
 tr.row-art:hover .dup-btn { display:inline-flex; }
 .custom-tag { display:inline-block; font-size:9px; font-family:'IBM Plex Mono',monospace; background:rgba(232,153,28,.15); border:1px solid rgba(232,153,28,.25); border-radius:2px; padding:1px 4px; color:var(--accent-bo); margin-left:5px; vertical-align:middle; font-weight:600; }
+.lot-tag     { display:inline-block; font-size:9px; font-weight:700; letter-spacing:.04em; border-radius:2px; padding:1px 5px; margin-left:4px; vertical-align:middle; }
+.lot-tag.lot-CFO { background:rgba(213,243,17,.12); color:var(--lot-cfo); border:1px solid rgba(213,243,17,.2); }
+.lot-tag.lot-CFA { background:rgba(36,169,181,.12); color:var(--lot-cfa); border:1px solid rgba(36,169,181,.2); }
+.lot-tag.lot-PV  { background:rgba(255,139,0,.12);  color:var(--lot-pv);  border:1px solid rgba(255,139,0,.2); }
 
 /* ── RIGHT PANEL ── */
 .rpanel { width:var(--panel-w); flex-shrink:0; background:var(--bg2); border-left:1px solid var(--grid-line-strong); display:flex; flex-direction:column; overflow:hidden; transition:width .22s ease; }

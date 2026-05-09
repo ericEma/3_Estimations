@@ -52,7 +52,7 @@
         <a class="sb-nav on" href="/bibliotheque">
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M5 5h6M5 8h6M5 11h3"/></svg>
           Bibliothèque DPGF
-          <span class="sb-count">285</span>
+          <span class="sb-count">{{ nb_articles }}</span>
         </a>
         <a class="sb-nav" href="/">
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="1" y="3" width="14" height="11" rx="1.5"/><path d="M5 3V2M11 3V2M1 7h14"/></svg>
@@ -105,7 +105,7 @@
       <div class="tbar">
         <span class="tbar-title" id="tbar-title">
           {% if affaire_courante %}{{ affaire_courante.name }}{% else %}Référentiel DPGF{% endif %}
-          — 285 articles · 3 chapitres
+          — {{ nb_articles }} articles · {{ nb_chapitres }} chapitres
         </span>
         <div class="search-wrap">
           <svg class="search-ico" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l3 3"/></svg>
@@ -168,7 +168,7 @@
   <!-- STATUS BAR -->
   <div class="statusbar">
     <div class="sb-dot"></div>
-    <span>Référentiel PSA · 285 articles · 3 chapitres · 44 sections</span>
+    <span>Référentiel PSA · {{ nb_articles }} articles · {{ nb_chapitres }} chapitres · {{ nb_sections }} sections</span>
     <span id="statusbar-ctx">{% if affaire_courante %}Affaire : {{ affaire_courante.name }} · SDO {{ affaire_courante.surface_sdo | int }} m²{% else %}Mode référentiel — aucune affaire sélectionnée{% endif %}</span>
   </div>
 
