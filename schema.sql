@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS devis_lines (
 
     -- Mapping DPGF
     mapping_status      TEXT NOT NULL DEFAULT 'pending'
-                        CHECK (mapping_status IN ('auto', 'manual', 'pending', 'unmapped')),
+                        CHECK (mapping_status IN ('auto', 'manual', 'pending', 'unmapped', 'excluded')),
     mapping_score       REAL,           -- score Fuzzy Match 0–100
     mapping_candidate   TEXT,           -- désignation DPGF candidate
 

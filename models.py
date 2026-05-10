@@ -214,6 +214,115 @@ def delete_bibliotheque_section(
     }
 
 
+_V_RATIOS_SQL = """
+CREATE VIEW IF NOT EXISTS v_ratios AS
+SELECT
+    a.id                AS dpgf_article_id,
+    a.code,
+    a.designation,
+    a.unit,
+    a.chapter,
+    a.section,
+    a.ratio_type,
+    COUNT(d.id)         AS nb_occurrences,
+    ROUND(AVG(d.prix_normalise), 2) AS avg_pu_normalise,
+    ROUND(AVG(
+        d.prix_normalise *
+        pow(
+            1.0 + p.taux_inflation,
+            CAST((SELECT value FROM config WHERE key='annee_reference') AS INTEGER)
+            - CAST(strftime('%Y', p.devis_date) AS INTEGER)
+        )
+    ), 2)               AS avg_pu_actualise,
+    ROUND(
+        CASE WHEN a.ratio_type = 'SURFACIQUE' THEN
+            AVG(
+                (d.prix_normalise * d.quantity / p.surface_sdo) *
+                pow(
+                    1.0 + p.taux_inflation,
+                    CAST((SELECT value FROM config WHERE key='annee_reference') AS INTEGER)
+                    - CAST(strftime('%Y', p.devis_date) AS INTEGER)
+                )
+            )
+        ELSE NULL END
+    , 2)                AS avg_ratio_m2_actualise,
+    ROUND(MIN(d.prix_normalise), 2)  AS pu_min,
+    ROUND(MAX(d.prix_normalise), 2)  AS pu_max,
+    MIN(p.devis_date)                AS devis_date_min,
+    MAX(p.devis_date)                AS devis_date_max,
+    CASE
+        WHEN COUNT(d.id) < 3              THEN 'ROUGE - Peu de références'
+        WHEN MIN(d.prix_normalise) < 0    THEN 'ROUGE - Prix négatif détecté'
+        WHEN MAX(d.prix_normalise) > AVG(d.prix_normalise) * 3
+                                          THEN 'ORANGE - Écart important'
+        ELSE 'OK'
+    END                 AS alerte
+FROM dpgf_articles a
+JOIN devis_lines d  ON d.dpgf_article_id = a.id
+JOIN projects p     ON d.project_id = p.id
+WHERE
+    d.mapping_status IN ('auto', 'manual')
+    AND d.row_type    = 'article'
+    AND d.unit_price_ht > 0
+    AND d.quantity IS NOT NULL
+    AND d.is_stat_valid = 1
+    AND p.surface_sdo > 0
+GROUP BY
+    a.id, a.code, a.designation, a.unit, a.chapter, a.section, a.ratio_type
+"""
+
+
+def _migrate_devis_lines_excluded_status(conn: sqlite3.Connection) -> None:
+    """Élargit CHECK(mapping_status) pour autoriser 'excluded' (cockpit Matching)."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='devis_lines'"
+    ).fetchone()
+    if not row or not row[0] or "'excluded'" in row[0]:
+        return
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DROP VIEW IF EXISTS v_ratios")
+    conn.commit()
+    conn.executescript(
+        """
+        CREATE TABLE _devis_lines__new (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id          INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            dpgf_article_id     INTEGER REFERENCES dpgf_articles(id),
+            original_code       TEXT,
+            original_designation TEXT NOT NULL,
+            unit                TEXT,
+            quantity            REAL,
+            unit_price_ht       REAL,
+            total_ht            REAL,
+            prix_normalise      REAL,
+            mapping_status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK (mapping_status IN (
+                    'auto', 'manual', 'pending', 'unmapped', 'excluded'
+                )),
+            mapping_score       REAL,
+            mapping_candidate   TEXT,
+            row_type            TEXT NOT NULL DEFAULT 'article'
+                CHECK (row_type IN ('article', 'subtotal', 'header', 'so')),
+            excel_row_num       INTEGER,
+            context_path        TEXT,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            sub_chapter_context TEXT,
+            is_stat_valid       INTEGER NOT NULL DEFAULT 1,
+            lot                 TEXT
+        );
+        INSERT INTO _devis_lines__new SELECT * FROM devis_lines;
+        DROP TABLE devis_lines;
+        ALTER TABLE _devis_lines__new RENAME TO devis_lines;
+        CREATE INDEX IF NOT EXISTS idx_lines_project  ON devis_lines(project_id);
+        CREATE INDEX IF NOT EXISTS idx_lines_article  ON devis_lines(dpgf_article_id);
+        CREATE INDEX IF NOT EXISTS idx_lines_mapping  ON devis_lines(mapping_status);
+        """
+        + _V_RATIOS_SQL
+    )
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
 def ensure_app_tables():
     """Crée les tables spécifiques à l'application web si absentes."""
     conn = get_db()
@@ -369,6 +478,8 @@ def ensure_app_tables():
             )
         """)
         conn.commit()
+
+        _migrate_devis_lines_excluded_status(conn)
     finally:
         conn.close()
 

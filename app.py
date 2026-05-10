@@ -632,16 +632,33 @@ def import_upload():
         success = False
 
     # Nettoyage des séquences ANSI (loguru colorize=True) pour affichage HTML.
-    # Sans ça, les codes de couleur s'affichent en clair : "[32m19:34:09[0m | [1mINFO ..."
     import re as _re
     _ANSI_RE = _re.compile(r'\x1b\[[0-9;]*m|\x1b\[\d+m|\[[0-9;]+m|\[1m|\[0m')
     output = _ANSI_RE.sub('', output)
+
+    # Dernier projet inséré (même fichier SQLite que le subprocess, cwd=PROJECT_DIR)
+    project_id_created = None
+    if success:
+        conn = models.get_db()
+        try:
+            row = conn.execute(
+                "SELECT id FROM projects ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if row:
+                project_id_created = int(row["id"])
+        finally:
+            conn.close()
+
+    # Redirection directe vers le cockpit Matching si import OK
+    if success and project_id_created:
+        return redirect(url_for('matching_view', project_id=project_id_created))
 
     return render_template('import_result.html',
                            success=success,
                            output=output,
                            filename=f.filename,
-                           name=name)
+                           name=name,
+                           project_id=project_id_created)
 
 
 # ─── Mapping manuel ───────────────────────────────────────────────────────────

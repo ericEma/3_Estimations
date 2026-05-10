@@ -23,6 +23,7 @@ Arguments optionnels :
   --total-ht-cell CELLULE   Cellule Excel du Total HT global (ex: F251)
                             Si absent, l'utilisateur est invité à le saisir.
 """
+import os
 import sys
 import re
 import sqlite3
@@ -38,7 +39,10 @@ from rapidfuzz import process, fuzz
 PROJECT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from scripts.read_excel import parse_devis, safe_float, DEVIS_FILE, ArticleRow
+from scripts.read_excel import parse_devis, safe_float, DEVIS_FILE as _DEVIS_FILE_DEFAULT, ArticleRow
+
+# Permet à app.py d'injecter le chemin du fichier uploadé via l'environnement
+DEVIS_FILE = Path(os.environ.get('DEVIS_FILE_OVERRIDE', str(_DEVIS_FILE_DEFAULT)))
 from scripts.scoring import unit_aware_score
 from scripts.mapping_knowledge import load_index, lookup_in_index, ensure_table as _ensure_knowledge_table
 from init_db import init_database

@@ -18,12 +18,11 @@ echo.
 REM --- Aller dans le dossier du script ---------------------------
 cd /d "%~dp0"
 
-REM --- Verification Python embeddable ----------------------------
-if not exist ".\python\python.exe" (
-    echo [ERREUR] Python embeddable introuvable dans .\python\
-    echo Lancez d'abord le setup initial.
-    pause
-    exit /b 1
+REM --- Verification Python (systeme ou embeddable) ---------------
+if exist ".\python\python.exe" (
+    set PYTHON=.\python\python.exe
+) else (
+    set PYTHON=python
 )
 
 REM --- Creation dossiers manquants -------------------------------
@@ -47,7 +46,7 @@ start "" cmd /c "timeout /t 3 /nobreak >nul & start http://localhost:5000"
 REM --- Lancement du serveur Flask (console visible) --------------
 echo [OK] Lancement de Flask... (Ctrl+C pour arreter)
 echo.
-.\python\python.exe app.py
+%PYTHON% app.py
 
 REM --- Si on arrive ici, le serveur s'est arrete -----------------
 echo.
