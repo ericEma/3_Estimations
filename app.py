@@ -14,6 +14,7 @@ import time
 import threading
 import subprocess
 import tempfile
+import re
 from datetime import date, datetime
 from pathlib import Path
 
@@ -35,6 +36,15 @@ from flask import (
     Flask, render_template, request, jsonify,
     redirect, url_for, send_file, flash
 )
+from flask.json.provider import DefaultJSONProvider
+
+
+class Utf8JSONProvider(DefaultJSONProvider):
+    """JSON API en UTF-8 lisible (pas d'échappement \\u00e8 dans les réponses)."""
+
+    def dumps(self, obj, **kwargs):
+        kwargs.setdefault("ensure_ascii", False)
+        return super().dumps(obj, **kwargs)
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_DIR)
@@ -59,6 +69,7 @@ logger.add(
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
+app.json = Utf8JSONProvider(app)
 app.secret_key = 'elec-estim-2026-local'
 app.config['UPLOAD_FOLDER']   = os.path.join(PROJECT_DIR, 'uploads')
 app.config['EXPORT_FOLDER']   = os.path.join(PROJECT_DIR, 'exports')
@@ -475,11 +486,11 @@ def bibliotheque(affaire_id=None):
                 break
 
     # Merge avg_pu_actualise depuis compute_ratios (SDO 1000, complexité 1.0)
-    # Remplace pu_ht=None pour les articles sans affaire_id ni ratio_override
+    # Repli uniquement si pu_ht **référentiel** absent (NULL) — pas si PU=0 (référent valide).
     try:
         ratios_ref = compute_ratios(1000.0, 1.0, 1.0, 1.0)
         for art in data['articles']:
-            if not art.get('pu_ht') and art['id'] in ratios_ref:
+            if art.get('pu_ht') is None and art['id'] in ratios_ref:
                 art['pu_ht'] = ratios_ref[art['id']].get('avg_pu_actualise') or 0
     except Exception:
         pass
@@ -823,8 +834,30 @@ def matching_data(project_id):
                 return 'PV'
             return 'CFO'
 
+        def _is_excel_structure_meta_row(rec: dict) -> bool:
+            """Lignes Excel d'en-tête (Nature « Titre » + type ratio sans montant) — pas des postes devis.
+
+            PSA : Nature « Article » désigne une ligne de données ; le type ratio (Unitaire/Surfacique)
+            est souvent importé dans original_designation pour toutes les lignes — ne pas l'utiliser
+            seul comme signal méta pour unit=Article (sinon cockpit vide).
+            """
+            if rec.get("row_type") != "article":
+                return False
+            u = (rec.get("unit") or "").strip().lower()
+            if u != "titre":
+                return False
+            d = (rec.get("original_designation") or "").strip().lower()
+            ratio_only = frozenset(("surfacique", "unitaire"))
+            if (rec.get("unit_price_ht") or 0) or (rec.get("total_ht") or 0):
+                return False
+            if d in ratio_only or not d:
+                return True
+            return False
+
         for row in rows:
             r = dict(row)
+            if _is_excel_structure_meta_row(r):
+                continue
             ctx    = (r.get('context_path') or '').split(' > ')
             chap   = ctx[0].strip() if ctx else '—'
             sec    = ctx[1].strip() if len(ctx) > 1 else '—'
@@ -849,6 +882,26 @@ def matching_data(project_id):
                     r['ecart_pct'] = round(
                         (wp['weighted_price'] - r['unit_price_ht']) / r['unit_price_ht'] * 100, 1
                     )
+            # Fallback: si parsing bon mais PU base absent → on affiche directement le PU devis
+            elif (
+                r.get('dpgf_article_id')
+                and r.get('unit_price_ht')
+                and not (r.get('base_pu') or 0)
+                and (r.get('mapping_score') or 0) >= 80
+                and (r.get('mapping_status') in ('auto', 'manual'))
+            ):
+                r['weighted_price'] = r.get('unit_price_ht')
+                r['wp_tooltip'] = {
+                    'confidence': 'HIGH',
+                    'mode': 'devis_only',
+                    'note': 'PU base manquant → affichage PU devis',
+                    'base_actualized': None,
+                    'devis_actualized': r.get('unit_price_ht'),
+                    'base_age_years': None,
+                    'devis_age_years': None,
+                    'base_weight': None,
+                    'devis_weight': None,
+                }
 
             if chap not in chapters_map:
                 chapters_order.append(chap)
@@ -865,7 +918,8 @@ def matching_data(project_id):
             for sec, lines in chapters_map[chap].items():
                 total_ht_sec = sum(
                     (l.get('total_ht') or 0)
-                    for l in lines if l['row_type'] == 'article'
+                    for l in lines
+                    if l['row_type'] == 'article' and not _is_excel_structure_meta_row(l)
                 )
                 ratio_m2 = round(total_ht_sec / sdo, 2) if sdo > 0 else 0
                 chap_sections.append({
@@ -883,18 +937,305 @@ def matching_data(project_id):
 
 @app.route('/api/matching/line/<int:line_id>/candidates')
 def matching_line_candidates(line_id):
-    from engine_matching import find_best_match
+    from engine_matching import clean_designation_radical, find_best_match
 
     conn = models.get_db()
     try:
         line = conn.execute(
-            "SELECT original_designation, lot FROM devis_lines WHERE id=?", (line_id,)
+            "SELECT original_designation, unit, unit_price_ht, lot, context_path FROM devis_lines WHERE id=?",
+            (line_id,),
         ).fetchone()
         if not line:
             return jsonify({'error': 'Ligne introuvable'}), 404
-        lot        = (line['lot'] or 'CFO').upper()
-        candidates = find_best_match(conn, line['original_designation'] or '', lot, top_n=5)
-        return jsonify({'candidates': candidates})
+        lot   = (line['lot'] or 'CFO').upper()
+        ctx   = (line['context_path'] or '').split(' > ')
+        dch   = ctx[0].strip() if ctx else ''
+        dsec  = ctx[1].strip() if len(ctx) > 1 else ''
+        raw_des = line['original_designation'] or ''
+        candidates = find_best_match(
+            conn,
+            raw_des,
+            lot,
+            top_n=5,
+            devis_chapter=dch or None,
+            devis_section=dsec or None,
+        )
+        # Filtrage strict: si un sous-chapitre (section) est détecté, on ne propose
+        # que les articles de cette section (sinon, suggestions peu utiles).
+        if dsec:
+            dsec_low = dsec.strip().lower()
+            candidates = [
+                c for c in candidates
+                if (c.get("section") or "").strip().lower() == dsec_low
+            ]
+        return jsonify({
+            'candidates': candidates,
+            'cleaned_designation': clean_designation_radical(raw_des),
+            'line': {
+                'lot': lot,
+                'unit': line['unit'],
+                'unit_price_ht': line['unit_price_ht'],
+                'context_path': line['context_path'],
+                'chapter': dch or None,
+                'section': dsec or None,
+            }
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/matching/line/<int:line_id>/section_articles')
+def matching_line_section_articles(line_id):
+    """Retourne tous les articles base d'un chapitre/section (détectés ou choisis) pour la ligne devis."""
+    conn = models.get_db()
+    try:
+        line = conn.execute(
+            "SELECT lot, context_path FROM devis_lines WHERE id=?",
+            (line_id,),
+        ).fetchone()
+        if not line:
+            return jsonify({'error': 'Ligne introuvable'}), 404
+
+        lot_override = (request.args.get("lot") or "").strip().upper()
+        lot = lot_override if lot_override in ("CFO", "CFA", "PV") else (line['lot'] or 'CFO').upper()
+        ctx = (line['context_path'] or '').split(' > ')
+        dch = ctx[0].strip() if ctx else ''
+        dsec = ctx[1].strip() if len(ctx) > 1 else ''
+
+        def _norm_ctx_part(s: str) -> str:
+            s = (s or "").strip()
+            # ex: "2.1 — Installation de chantier" -> "Installation de chantier"
+            s = re.sub(r"^\s*\d+(?:\.\d+)*\s*[–—-]\s*", "", s)
+            s = re.sub(r"\s{2,}", " ", s)
+            return s.strip()
+
+        # Chapitre/section forcés par l'utilisateur (parcours manuel)
+        ch_q = request.args.get("chapter")
+        sec_q = request.args.get("section")
+
+        dch_n = _norm_ctx_part(ch_q) if ch_q else _norm_ctx_part(dch)
+        dsec_n = _norm_ctx_part(sec_q) if sec_q else _norm_ctx_part(dsec)
+
+        if not dch_n or not dsec_n:
+            return jsonify({'articles': [], 'chapter': dch_n or None, 'section': dsec_n or None, 'lot': lot})
+
+        rows = conn.execute(
+            """
+            SELECT id, designation, unit, pu_ht_ref, chapter, section, lot
+            FROM dpgf_articles
+            WHERE row_type='article'
+              AND lot=?
+              AND LOWER(TRIM(chapter))=LOWER(TRIM(?))
+              AND LOWER(TRIM(section))=LOWER(TRIM(?))
+              AND (is_hidden IS NULL OR is_hidden=0)
+            ORDER BY row_order, id
+            """,
+            (lot, dch_n, dsec_n),
+        ).fetchall()
+
+        def _breadcrumb(ch, sec):
+            parts = [p.strip() for p in [ch or "", sec or ""] if p and p.strip()]
+            return " ➔ ".join(parts)
+
+        articles = []
+        for r in rows:
+            rr = dict(r)
+            des = rr.get("designation") or ""
+            ch = rr.get("chapter")
+            sec = rr.get("section")
+            articles.append({
+                "article_id": rr.get("id"),
+                "designation": des,
+                "unit": rr.get("unit") or "",
+                "pu_ht_ref": rr.get("pu_ht_ref") or 0.0,
+                "score": 0.0,
+                "match_type": "browse",
+                "chapter": ch,
+                "section": sec,
+                "lot": (rr.get("lot") or lot).upper(),
+                "breadcrumb": _breadcrumb(ch, sec),
+                "path": " ➔ ".join([p for p in [ch, sec, des] if p]),
+            })
+
+        return jsonify({'articles': articles, 'chapter': dch_n, 'section': dsec_n, 'lot': lot})
+    finally:
+        conn.close()
+
+
+@app.route('/api/matching/line/<int:line_id>/browse_options')
+def matching_line_browse_options(line_id):
+    """Retourne les options de sous-chapitres (avec chapitre) pour le parcours manuel."""
+    conn = models.get_db()
+    try:
+        line = conn.execute(
+            "SELECT lot, context_path FROM devis_lines WHERE id=?",
+            (line_id,),
+        ).fetchone()
+        if not line:
+            return jsonify({'error': 'Ligne introuvable'}), 404
+
+        lot_override = (request.args.get("lot") or "").strip().upper()
+        lot = lot_override if lot_override in ("CFO", "CFA", "PV") else (line['lot'] or 'CFO').upper()
+        ctx = (line['context_path'] or '').split(' > ')
+        devis_ch = (ctx[0].strip() if ctx else '') or None
+        devis_sec = (ctx[1].strip() if len(ctx) > 1 else '') or None
+
+        def _norm(s: str | None) -> str:
+            s = (s or "").strip()
+            s = re.sub(r"^\s*\d+(?:\.\d+)*\s*[–—-]\s*", "", s)
+            s = re.sub(r"\s{2,}", " ", s)
+            return s.strip().lower()
+
+        # Liste des couples (chapter, section) pour le lot (pour éviter le dropdown chapitre)
+        pairs = conn.execute(
+            """
+            SELECT DISTINCT chapter, section
+            FROM dpgf_articles
+            WHERE row_type='article'
+              AND lot=?
+              AND (is_hidden IS NULL OR is_hidden=0)
+              AND chapter IS NOT NULL AND TRIM(chapter) != ''
+              AND section IS NOT NULL AND TRIM(section) != ''
+            ORDER BY chapter, section
+            """,
+            (lot,),
+        ).fetchall()
+
+        section_choices = []
+        for r in pairs:
+            ch = r["chapter"]
+            sec = r["section"]
+            section_choices.append({
+                "chapter": ch,
+                "section": sec,
+                "label": f"{ch} ➔ {sec}",
+            })
+
+        return jsonify({
+            "lot": lot,
+            "devis": {"chapter": devis_ch, "section": devis_sec},
+            "section_choices": section_choices,
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/matching/line/<int:line_id>/create_article', methods=['POST'])
+def matching_line_create_article(line_id):
+    """Crée un article custom (DPGF) depuis une ligne devis, puis mappe la ligne."""
+    from utils import calculate_weighted_price, get_effective_date
+
+    data = request.get_json(force=True)
+    designation = (data.get('designation') or '').strip()
+    unit = (data.get('unit') or '').strip()
+    pu_ht = data.get('pu_ht')
+    chapter = (data.get('chapter') or '').strip()
+    section = (data.get('section') or '').strip()
+
+    if not designation:
+        return jsonify({'error': 'La désignation est obligatoire.'}), 400
+    if not unit:
+        return jsonify({'error': 'L’unité est obligatoire.'}), 400
+    if not chapter:
+        return jsonify({'error': 'Le chapitre est requis pour créer un article.'}), 400
+
+    try:
+        pu_val = float(pu_ht) if pu_ht not in (None, '') else 0.0
+    except Exception:
+        return jsonify({'error': 'Le PU doit être un nombre positif.'}), 400
+    if pu_val < 0:
+        return jsonify({'error': 'Le PU doit être un nombre positif.'}), 400
+
+    conn = models.get_db()
+    try:
+        line = conn.execute(
+            "SELECT project_id, original_designation, unit, unit_price_ht, lot, context_path FROM devis_lines WHERE id=?",
+            (line_id,),
+        ).fetchone()
+        if not line:
+            return jsonify({'error': 'Ligne introuvable'}), 404
+
+        lot = (line['lot'] or 'CFO').upper()
+
+        # row_order : max existant dans le même chapitre/section + 1
+        max_order = conn.execute(
+            "SELECT COALESCE(MAX(row_order), 0) FROM dpgf_articles WHERE chapter=? AND section=?",
+            (chapter, section),
+        ).fetchone()[0]
+
+        cur = conn.execute(
+            """
+            INSERT INTO dpgf_articles
+              (designation, unit, chapter, section, row_order,
+               row_type, ratio_type, is_custom, qty_ref, lot, pu_ht_ref)
+            VALUES (?, ?, ?, ?, ?, 'article', 'UNITAIRE', 1, 0, ?, ?)
+            """,
+            (designation, unit, chapter, section, max_order + 1, lot, pu_val),
+        )
+        new_art_id = cur.lastrowid
+
+        # ratio_overrides (optionnel, mais utile si le reste de l'app s'appuie dessus)
+        if pu_val > 0:
+            conn.execute(
+                """
+                INSERT INTO ratio_overrides (dpgf_article_id, pu_override, raison)
+                VALUES (?, ?, 'Création depuis matching')
+                ON CONFLICT(dpgf_article_id) DO UPDATE SET
+                    pu_override = excluded.pu_override,
+                    created_at  = CURRENT_TIMESTAMP
+                """,
+                (new_art_id, pu_val),
+            )
+
+        # Mappe la ligne devis
+        conn.execute(
+            """
+            UPDATE devis_lines
+            SET dpgf_article_id = ?, mapping_status = 'manual'
+            WHERE id = ?
+            """,
+            (new_art_id, line_id),
+        )
+
+        conn.commit()
+
+        # Recalcul prix pondéré (même forme que /select)
+        line2 = conn.execute("SELECT * FROM devis_lines WHERE id=?", (line_id,)).fetchone()
+        article = conn.execute("SELECT * FROM dpgf_articles WHERE id=?", (new_art_id,)).fetchone()
+        proj = conn.execute(
+            "SELECT devis_date FROM projects WHERE id=?", (dict(line2)['project_id'],)
+        ).fetchone()
+
+        result = {
+            'status': 'ok',
+            'weighted_price': None,
+            'wp_tooltip': None,
+            'ecart_pct': None,
+            'base_designation': None,
+            'base_pu': None,
+            'article_id': new_art_id,
+        }
+        if line2 and article and proj:
+            eff_date = get_effective_date(conn, new_art_id)
+            wp = calculate_weighted_price(
+                base_price=article['pu_ht_ref'],
+                base_date=eff_date,
+                devis_price=line2['unit_price_ht'],
+                devis_date=proj['devis_date'],
+            )
+            result['weighted_price'] = wp.get('weighted_price')
+            result['wp_tooltip'] = wp
+            result['base_designation'] = article['designation']
+            result['base_pu'] = article['pu_ht_ref']
+            if wp.get('weighted_price') and line2['unit_price_ht']:
+                result['ecart_pct'] = round(
+                    (wp['weighted_price'] - line2['unit_price_ht']) / line2['unit_price_ht'] * 100, 1
+                )
+
+        return jsonify(result)
+    except Exception as exc:
+        conn.rollback()
+        return jsonify({'error': str(exc)}), 500
     finally:
         conn.close()
 

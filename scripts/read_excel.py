@@ -242,32 +242,173 @@ def parse_dpgf(filepath: Path) -> list[ArticleRow]:
 
 
 # ══════════════════════════════════════════════════════════════
-# Parseur Devis PSA
+# Parseur Devis PSA — détection grille 6 col vs grille DPGF 9 col
 # ══════════════════════════════════════════════════════════════
 
-def parse_devis(filepath: Path) -> list[ArticleRow]:
-    """
-    Parse le devis PSA Urgences.
-    Structure : en-têtes row 6, données à partir de row 7.
-    Colonnes : A=Art. | B=Désignation | C=U | D=Qté | E=Prix unitaire | F=Prix Total HT
-    """
-    logger.info(f"Ouverture Devis : {filepath.name}")
-    wb = openpyxl.load_workbook(str(filepath), data_only=True)
-    sheet_name = wb.sheetnames[0]
-    ws = wb[sheet_name]
-    logger.info(f"Feuille : '{sheet_name}'")
 
+def _detect_devis_column_layout(ws) -> str:
+    """'psa6' = A..F historique ; 'dpgf9' = même grille que parse_dpgf (A..I, en-têtes ~ligne 6)."""
+    for rnums in ((5, 6), (6, 7)):
+        for tup in ws.iter_rows(min_row=rnums[0], max_row=rnums[1], values_only=True):
+            if not tup:
+                continue
+            texts = [(safe_str(x) or "").lower() for x in tup[:9]]
+            blob = " ".join(texts)
+            if "ratio" in blob and ("nature" in blob or "désignation" in blob or "designation" in blob):
+                return "dpgf9"
+    max_scan = min(ws.max_row or 7, 80)
+    for row in ws.iter_rows(min_row=7, max_row=max_scan, values_only=True):
+        if not row or len(row) < 9:
+            continue
+        b = safe_str(row[1])
+        c = safe_str(row[2])
+        d = safe_str(row[3])
+        if not (b and c and d):
+            continue
+        if b.lower() in ("surfacique", "unitaire") and c.lower() in ("titre", "article"):
+            return "dpgf9"
+    return "psa6"
+
+
+def _parse_devis_dpgf_grid(ws) -> tuple[list[ArticleRow], dict, Optional[float]]:
+    """Feuille devis au format DPGF (B=type ratio, C=Nature, D=Désignation, E=U, …)."""
     rows_parsed: list[ArticleRow] = []
     current_chapter = ""
     current_section = ""
     current_chapter_ratio = "SURFACIQUE"
     total_ht_source = None
+    stats = {"chapter": 0, "section": 0, "article": 0, "subtotal": 0, "so": 0, "skipped": 0}
 
+    for excel_row_num, row in enumerate(ws.iter_rows(min_row=7, values_only=True), start=7):
+        col_a = row[0] if len(row) > 0 else None
+        col_b = row[1] if len(row) > 1 else None
+        col_c = row[2] if len(row) > 2 else None
+        col_d = row[3] if len(row) > 3 else None
+        col_e = row[4] if len(row) > 4 else None
+        col_f = row[5] if len(row) > 5 else None
+        col_g = row[6] if len(row) > 6 else None
+        col_h = row[7] if len(row) > 7 else None
+        col_i = row[8] if len(row) > 8 else None
+
+        code = safe_str(col_a)
+        ratio_raw = safe_str(col_b)
+        nature = safe_str(col_c)
+        designation = safe_str(col_d)
+        unit = safe_str(col_e)
+
+        if designation and re.search(r"TOTAL\s*HT", designation.upper()):
+            total_ht_source = safe_float(col_i)
+            if total_ht_source is not None:
+                logger.info(f"Total HT source détecté : {total_ht_source:,.2f} €")
+            continue
+
+        if code and not designation and not ratio_raw:
+            current_chapter = code
+            current_section = ""
+            current_chapter_ratio = "SURFACIQUE"
+            rows_parsed.append(
+                ArticleRow(
+                    row_num=excel_row_num,
+                    row_type="chapter",
+                    code=None,
+                    designation=current_chapter,
+                    unit=None,
+                    chapter=current_chapter,
+                    section="",
+                    ratio_type=current_chapter_ratio,
+                    ratio_type_source="auto_chapter",
+                )
+            )
+            stats["chapter"] += 1
+            continue
+
+        if designation and is_subtotal_row(designation):
+            rows_parsed.append(
+                ArticleRow(
+                    row_num=excel_row_num,
+                    row_type="subtotal",
+                    code=None,
+                    designation=designation,
+                    unit=None,
+                    total_ht=safe_float(col_i),
+                    chapter=current_chapter,
+                    section=current_section,
+                    ratio_type=current_chapter_ratio,
+                    ratio_type_source="auto_chapter",
+                )
+            )
+            stats["subtotal"] += 1
+            continue
+
+        if not designation:
+            stats["skipped"] += 1
+            continue
+
+        if ratio_raw and ratio_raw.lower() == "unitaire":
+            ratio_type, ratio_source = "UNITAIRE", "explicit"
+        elif ratio_raw and ratio_raw.lower() == "surfacique":
+            ratio_type, ratio_source = "SURFACIQUE", "explicit"
+        else:
+            ratio_type, ratio_source = detect_ratio_type(unit, current_chapter_ratio)
+
+        q_moe = safe_float(col_f)
+        q_ent = safe_float(col_g)
+        qty_devis = q_ent if q_ent not in (None, 0) else q_moe
+
+        if nature and nature.lower() == "titre":
+            current_section = designation
+            rows_parsed.append(
+                ArticleRow(
+                    row_num=excel_row_num,
+                    row_type="section",
+                    code=code,
+                    designation=designation,
+                    unit=unit,
+                    chapter=current_chapter,
+                    section=current_section,
+                    ratio_type=ratio_type,
+                    ratio_type_source=ratio_source,
+                )
+            )
+            stats["section"] += 1
+        else:
+            rows_parsed.append(
+                ArticleRow(
+                    row_num=excel_row_num,
+                    row_type="article",
+                    code=code,
+                    designation=designation,
+                    unit=unit,
+                    quantity_moe=q_moe,
+                    quantity_ent=q_ent,
+                    quantity=qty_devis,
+                    unit_price=safe_float(col_h),
+                    total_ht=safe_float(col_i),
+                    chapter=current_chapter,
+                    section=current_section,
+                    ratio_type=ratio_type,
+                    ratio_type_source=ratio_source,
+                )
+            )
+            stats["article"] += 1
+
+    return rows_parsed, stats, total_ht_source
+
+
+def _parse_devis_psa_six_col(ws) -> tuple[list[ArticleRow], dict, Optional[float]]:
+    """Grille historique : A=Art. | B=Désignation | C=U | D=Qté | E=PU | F=Total HT."""
+    rows_parsed: list[ArticleRow] = []
+    current_chapter = ""
+    current_section = ""
+    current_chapter_ratio = "SURFACIQUE"
+    total_ht_source = None
     stats = {"chapter": 0, "section": 0, "article": 0, "subtotal": 0, "so": 0, "skipped": 0}
 
     for excel_row_num, row in enumerate(ws.iter_rows(min_row=7, values_only=True), start=7):
         col_a, col_b, col_c, col_d, col_e, col_f = (
-            row[0], row[1], row[2],
+            row[0],
+            row[1],
+            row[2],
             row[3] if len(row) > 3 else None,
             row[4] if len(row) > 4 else None,
             row[5] if len(row) > 5 else None,
@@ -284,61 +425,109 @@ def parse_devis(filepath: Path) -> list[ArticleRow]:
         unit_price = safe_float(col_e)
         total_ht = safe_float(col_f)
 
-        # Détecter le Total HT global (dernière ligne avec "TOTAL" dans la désignation)
         if designation and re.search(r"TOTAL\s*HT", designation.upper()):
             total_ht_source = total_ht
             logger.info(f"Total HT source détecté : {total_ht_source:,.2f} €")
             continue
 
-        # ── Sous-total ─────────────────────────────────────────
         if is_subtotal_row(col_b):
-            rows_parsed.append(ArticleRow(
-                row_num=excel_row_num, row_type="subtotal",
-                code=None, designation=designation, unit=None,
-                total_ht=total_ht,
-                chapter=current_chapter, section=current_section,
-                ratio_type=current_chapter_ratio, ratio_type_source="auto_chapter"
-            ))
+            rows_parsed.append(
+                ArticleRow(
+                    row_num=excel_row_num,
+                    row_type="subtotal",
+                    code=None,
+                    designation=designation,
+                    unit=None,
+                    total_ht=total_ht,
+                    chapter=current_chapter,
+                    section=current_section,
+                    ratio_type=current_chapter_ratio,
+                    ratio_type_source="auto_chapter",
+                )
+            )
             stats["subtotal"] += 1
             continue
 
-        # ── Chapitre ───────────────────────────────────────────
         if code and not re.search(r"\.", str(code)) and not unit and not unit_price:
             current_chapter = designation
             current_section = ""
             if unit and unit.strip().lower() in UNITS_SURFACIQUE:
                 current_chapter_ratio = "SURFACIQUE"
             else:
-                current_chapter_ratio = "SURFACIQUE"  # défaut
+                current_chapter_ratio = "SURFACIQUE"
 
-            rows_parsed.append(ArticleRow(
-                row_num=excel_row_num, row_type="chapter",
-                code=code, designation=designation, unit=unit,
-                chapter=current_chapter, section="",
-                ratio_type=current_chapter_ratio, ratio_type_source="auto_chapter"
-            ))
+            rows_parsed.append(
+                ArticleRow(
+                    row_num=excel_row_num,
+                    row_type="chapter",
+                    code=code,
+                    designation=designation,
+                    unit=unit,
+                    chapter=current_chapter,
+                    section="",
+                    ratio_type=current_chapter_ratio,
+                    ratio_type_source="auto_chapter",
+                )
+            )
             stats["chapter"] += 1
             continue
 
-        # ── Ligne SO (Sans Objet) ─────────────────────────────
+        # ── Sous-chapitre PSA (ex. A=« 2.1 », B=libellé, C–F vides) ───────────
+        # Sans ce cas, tout est classé « article » car le code contient un « . »
+        # et les articles apparaissent à plat sous le chapitre dans le matching.
+        qty_probe = safe_float(qty_raw)
+        qty_str_nonempty = isinstance(qty_raw, str) and bool(qty_raw.strip())
+        if code and designation:
+            parts = str(code).strip().split(".")
+            if (
+                len(parts) == 2
+                and all(p.isdigit() for p in parts)
+                and not unit
+                and unit_price is None
+                and (total_ht is None or total_ht == 0)
+                and qty_probe is None
+                and not qty_str_nonempty
+            ):
+                current_section = f"{code} — {designation}"
+                rows_parsed.append(
+                    ArticleRow(
+                        row_num=excel_row_num,
+                        row_type="section",
+                        code=code,
+                        designation=designation,
+                        unit=None,
+                        chapter=current_chapter,
+                        section=current_section,
+                        ratio_type=current_chapter_ratio,
+                        ratio_type_source="auto_chapter",
+                    )
+                )
+                stats["section"] += 1
+                continue
+
         qty_is_so = isinstance(qty_raw, str) and qty_raw.strip().upper() == "SO"
         if qty_is_so:
-            rows_parsed.append(ArticleRow(
-                row_num=excel_row_num, row_type="so",
-                code=code, designation=designation, unit=unit,
-                quantity=None, unit_price=unit_price, total_ht=0.0,
-                chapter=current_chapter, section=current_section,
-                ratio_type="UNITAIRE", ratio_type_source="auto_unit"
-            ))
+            rows_parsed.append(
+                ArticleRow(
+                    row_num=excel_row_num,
+                    row_type="so",
+                    code=code,
+                    designation=designation,
+                    unit=unit,
+                    quantity=None,
+                    unit_price=unit_price,
+                    total_ht=0.0,
+                    chapter=current_chapter,
+                    section=current_section,
+                    ratio_type="UNITAIRE",
+                    ratio_type_source="auto_unit",
+                )
+            )
             stats["so"] += 1
             continue
 
-        # ── Article ou Section ────────────────────────────────
         quantity = safe_float(qty_raw)
         ratio_type, ratio_source = detect_ratio_type(unit, current_chapter_ratio)
-        # Règle métier (2026-04-21) : toute ligne avec un Montant HT non nul doit
-        # être considérée comme un article (à importer + à mapper), même si unit
-        # et unit_price sont vides (ex: ligne forfaitaire avec total global).
         is_article = (
             bool(code and re.search(r"\.", str(code)))
             or bool(unit)
@@ -347,25 +536,62 @@ def parse_devis(filepath: Path) -> list[ArticleRow]:
         )
 
         if is_article:
-            rows_parsed.append(ArticleRow(
-                row_num=excel_row_num, row_type="article",
-                code=code, designation=designation, unit=unit,
-                quantity=quantity,
-                unit_price=unit_price,
-                total_ht=total_ht,
-                chapter=current_chapter, section=current_section,
-                ratio_type=ratio_type, ratio_type_source=ratio_source
-            ))
+            rows_parsed.append(
+                ArticleRow(
+                    row_num=excel_row_num,
+                    row_type="article",
+                    code=code,
+                    designation=designation,
+                    unit=unit,
+                    quantity=quantity,
+                    unit_price=unit_price,
+                    total_ht=total_ht,
+                    chapter=current_chapter,
+                    section=current_section,
+                    ratio_type=ratio_type,
+                    ratio_type_source=ratio_source,
+                )
+            )
             stats["article"] += 1
         else:
             current_section = designation
-            rows_parsed.append(ArticleRow(
-                row_num=excel_row_num, row_type="section",
-                code=code, designation=designation, unit=unit,
-                chapter=current_chapter, section=current_section,
-                ratio_type=current_chapter_ratio, ratio_type_source="auto_chapter"
-            ))
+            rows_parsed.append(
+                ArticleRow(
+                    row_num=excel_row_num,
+                    row_type="section",
+                    code=code,
+                    designation=designation,
+                    unit=unit,
+                    chapter=current_chapter,
+                    section=current_section,
+                    ratio_type=current_chapter_ratio,
+                    ratio_type_source="auto_chapter",
+                )
+            )
             stats["section"] += 1
+
+    return rows_parsed, stats, total_ht_source
+
+
+def parse_devis(filepath: Path) -> tuple[list[ArticleRow], dict, Optional[float]]:
+    """
+    Parse le devis (feuille 1).
+
+    - **psa6** : en-têtes ligne 6, données ligne 7+ — A=Art. | B=Désignation | C=U | D=Qté | E=PU | F=Total
+    - **dpgf9** : même grille que le modèle DPGF — B=Type ratio | C=Nature | D=Désignation | E=U | F/G=Q | H=PU | I=Total
+    """
+    logger.info(f"Ouverture Devis : {filepath.name}")
+    wb = openpyxl.load_workbook(str(filepath), data_only=True)
+    sheet_name = wb.sheetnames[0]
+    ws = wb[sheet_name]
+    logger.info(f"Feuille : '{sheet_name}'")
+
+    layout = _detect_devis_column_layout(ws)
+    logger.info(f"Grille devis détectée : {layout}")
+    if layout == "dpgf9":
+        rows_parsed, stats, total_ht_source = _parse_devis_dpgf_grid(ws)
+    else:
+        rows_parsed, stats, total_ht_source = _parse_devis_psa_six_col(ws)
 
     wb.close()
     logger.info(f"Parsing terminé : {stats}")

@@ -80,10 +80,11 @@
 /* ─── Section ────────────────────────────────────────────────────────────── */
 .mv-section { border-top:1px solid var(--mv-border); }
 .mv-section-header {
-  display:flex; align-items:center; gap:12px; padding:7px 14px;
-  background:rgba(255,255,255,.03); font-size:12px;
+  display:flex; align-items:center; gap:12px; padding:8px 14px 8px 11px;
+  background:rgba(36,169,181,.07); font-size:12px;
+  border-left:3px solid var(--accent2);
 }
-.mv-section-name { font-weight:600; color:#ccc; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mv-section-name { font-weight:700; font-size:13px; color:#e8e8e8; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .mv-section-kpi  { display:flex; gap:14px; }
 .kpi-item { display:flex; gap:4px; align-items:center; white-space:nowrap; }
 .kpi-label { color:#777; font-size:11px; }
@@ -152,6 +153,16 @@ tr.mv-excluded .col-tot-dev { color:#5a5a5a !important; }
 }
 .btn-selector:hover { border-color:var(--accent2); color:#eee; }
 .btn-selector.mapped { border-color:rgba(63,185,80,.3); color:#a8f5b5; }
+.btn-selector.needs-attention {
+  border-color: rgba(245,166,35,.55);
+  background: rgba(245,166,35,.12);
+  color: #ffd6a1;
+}
+.btn-selector.needs-attention:hover {
+  border-color: rgba(245,166,35,.85);
+  background: rgba(245,166,35,.16);
+  color:#fff;
+}
 .btn-selector .sel-text { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .btn-selector .sel-icon { font-size:10px; color:#666; flex-shrink:0; }
 
@@ -233,25 +244,58 @@ tr.mv-excluded .col-tot-dev { color:#5a5a5a !important; }
 
 .modal-candidates { display:flex; flex-direction:column; gap:4px; }
 .candidate-row {
-  display:flex; align-items:center; gap:10px; padding:8px 10px;
+  display:flex; align-items:flex-start; gap:8px; padding:8px 10px;
   border:1px solid rgba(255,255,255,.06); border-radius:5px; cursor:pointer;
   transition:background .12s, border-color .12s;
 }
 .candidate-row:hover  { background:rgba(255,255,255,.06); border-color:rgba(255,255,255,.15); }
 .candidate-row.selected { background:rgba(213,243,17,.08); border-color:rgba(213,243,17,.3); }
-.cand-score {
-  width:40px; font-size:11px; font-weight:700; text-align:center; flex-shrink:0;
-  padding:2px 0; border-radius:3px;
-}
-.score-high   { color:#3fb950; background:rgba(63,185,80,.12); }
-.score-medium { color:#d29922; background:rgba(210,153,34,.12); }
-.score-low    { color:#888;    background:rgba(120,120,120,.12); }
 .cand-info    { flex:1; min-width:0; }
-.cand-desig   { font-size:12px; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.cand-meta    { display:flex; gap:8px; margin-top:2px; }
+.cand-topline { display:flex; align-items:flex-start; gap:10px; }
+.cand-lot { margin-top:1px; flex-shrink:0; }
+.cand-text { flex:1; min-width:0; }
+.cand-breadcrumb {
+  font-size:11px; color:#98a6af; line-height:1.2;
+  white-space:normal; word-break:break-word;
+}
+.cand-article {
+  margin-top:2px;
+  font-size:13px; color:#f1f6fa; font-weight:800; line-height:1.25;
+  white-space:normal; word-break:break-word;
+}
+.cand-meta    { display:flex; gap:8px; margin-top:4px; flex-wrap:wrap; }
 .cand-pu      { font-size:11px; color:var(--accent2); font-weight:600; }
 .cand-unit    { font-size:11px; color:#777; }
 .cand-type    { font-size:10px; color:#666; }
+
+.create-cta-box {
+  text-align:center; padding:18px 10px; color:#9aa7af; font-size:13px;
+  border:1px dashed rgba(255,255,255,.12); border-radius:7px;
+}
+.create-cta-box .cta-title { color:#cfd7dd; font-weight:700; margin-bottom:6px; }
+.btn-create-article {
+  padding:8px 14px; background:rgba(255,255,255,.06); color:#d6dee3; font-size:13px;
+  border:1px solid rgba(255,255,255,.14); border-radius:6px; cursor:pointer;
+}
+.btn-create-article:hover { border-color:rgba(213,243,17,.35); color:#fff; }
+
+.mv-create-form { display:none; border:1px solid rgba(255,255,255,.08); border-radius:8px; padding:12px; }
+.mv-create-form.open { display:block; }
+.mv-form-title { font-size:13px; font-weight:800; color:#e8e8e8; margin:0 0 10px 0; }
+.mv-form-row { display:flex; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
+.mv-form-field { flex:1; min-width:180px; }
+.mv-form-field label { display:block; font-size:11px; color:#93a0a8; margin-bottom:4px; font-weight:700; }
+.mv-form-field input {
+  width:100%; background:#1a2d38; border:1px solid rgba(255,255,255,.15); border-radius:5px;
+  color:#eee; padding:8px 10px; font-size:13px; box-sizing:border-box;
+}
+.mv-form-field input:focus { outline:none; border-color:var(--accent2); }
+.mv-form-help { font-size:11px; color:#6f7f88; margin-top:4px; }
+.mv-form-error { display:none; color:#f89893; font-size:12px; margin-top:6px; }
+.mv-form-error.show { display:block; }
+.mv-form-context { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+.mv-form-context .ctx-label { font-size:11px; color:#93a0a8; font-weight:700; }
+.mv-form-context .ctx-path { font-size:11px; color:#98a6af; }
 
 .modal-loading { text-align:center; padding:20px; color:#777; font-size:13px; }
 
@@ -272,6 +316,12 @@ tr.mv-excluded .col-tot-dev { color:#5a5a5a !important; }
   padding:8px 14px; background:rgba(255,255,255,.06); color:#ccc; font-size:13px;
   border:1px solid rgba(255,255,255,.1); border-radius:5px; cursor:pointer;
 }
+.btn-back-suggestions {
+  padding:8px 14px; background:rgba(255,255,255,.06); color:#ccc; font-size:13px;
+  border:1px solid rgba(255,255,255,.1); border-radius:5px; cursor:pointer;
+  display:none;
+}
+.btn-back-suggestions.show { display:inline-block; }
 
 /* ─── Zone vide ──────────────────────────────────────────────────────────── */
 .mv-empty { text-align:center; padding:40px; color:#666; font-size:14px; }
@@ -356,13 +406,56 @@ tr.mv-excluded .col-tot-dev { color:#5a5a5a !important; }
         <div class="info-label">Désignation devis (brute)</div>
         <div class="info-desig" id="modal-raw-desig">—</div>
         <div class="info-clean" id="modal-clean-desig"></div>
+        <div class="info-label" style="margin-top:8px">Chemin devis</div>
+        <div class="info-clean" id="modal-devis-path" style="display:block;color:#98a6af">—</div>
       </div>
       <div class="modal-search-wrap">
         <input type="text" class="modal-search" id="modal-search"
-               placeholder="Filtrer les candidats…" oninput="filterCandidates()">
+               placeholder="Rechercher dans les candidats…" oninput="filterCandidates()">
       </div>
       <div class="modal-candidates" id="modal-candidates">
         <div class="modal-loading">Chargement…</div>
+      </div>
+
+      <!-- Formulaire création article -->
+      <div class="mv-create-form" id="mv-create-form">
+        <div class="mv-form-title">Créer un article personnalisé</div>
+        <div class="mv-form-context">
+          <span class="ctx-label">Lot</span>
+          <span id="mv-create-lot"></span>
+          <span class="ctx-label">Chemin devis</span>
+          <span class="ctx-path" id="mv-create-context">—</span>
+        </div>
+
+        <div class="mv-form-row">
+          <div class="mv-form-field" style="flex:2;min-width:260px">
+            <label for="inp-create-designation">Désignation (base)</label>
+            <input id="inp-create-designation" type="text" placeholder="Ex. Armoire divisionnaire 24 modules">
+            <div class="mv-form-help">Évitez “Fourniture et pose…”. Utilisez un libellé technique court.</div>
+          </div>
+          <div class="mv-form-field" style="max-width:140px">
+            <label for="inp-create-unit">Unité</label>
+            <input id="inp-create-unit" type="text" placeholder="u">
+          </div>
+          <div class="mv-form-field" style="max-width:160px">
+            <label for="inp-create-pu">PU HT (base)</label>
+            <input id="inp-create-pu" type="text" placeholder="0,00">
+            <div class="mv-form-help">Si renseigné, il sera utilisé immédiatement comme prix de référence.</div>
+          </div>
+        </div>
+
+        <div class="mv-form-row">
+          <div class="mv-form-field">
+            <label for="inp-create-chapter">Chapitre</label>
+            <input id="inp-create-chapter" type="text" placeholder="Ex. Courants Forts">
+          </div>
+          <div class="mv-form-field">
+            <label for="inp-create-section">Sous-chapitre (section)</label>
+            <input id="inp-create-section" type="text" placeholder="Ex. Tableaux de puissance">
+          </div>
+        </div>
+
+        <div class="mv-form-error" id="mv-create-error"></div>
       </div>
     </div>
     <div class="mv-modal-footer">
@@ -370,9 +463,14 @@ tr.mv-excluded .col-tot-dev { color:#5a5a5a !important; }
         <input type="checkbox" id="chk-memorize">
         <span class="syn-label">📚 Mémoriser comme synonyme</span>
       </label>
+      <button class="btn-create-article" id="btn-open-create" onclick="openCreateArticleForm()">Créer un nouvel article</button>
+      <button class="btn-back-suggestions" id="btn-back-suggestions" onclick="backToSuggestions()">Retour aux suggestions</button>
       <button class="btn-cancel-modal" onclick="closeModal()">Annuler</button>
       <button class="btn-confirm" id="btn-confirm" disabled onclick="confirmSelection()">
         Appliquer →
+      </button>
+      <button class="btn-confirm" id="btn-create-apply" style="display:none" onclick="createAndApplyArticle()">
+        Créer et appliquer
       </button>
     </div>
   </div>

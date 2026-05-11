@@ -1340,12 +1340,16 @@ def get_bibliotheque_data(affaire_id=None) -> dict:
                 ORDER BY da.chapter, da.row_order
             """, (affaire_id,)).fetchall()
         else:
+            # Bibliothèque sans affaire : afficher le prix **référentiel** (Excel / pu_ht_ref).
+            # Les ratio_overrides sont un correctif global (CLAUDE.md) : ils ne doivent pas
+            # masquer la dernière base importée dans cet écran.
             rows = conn.execute("""
                 SELECT da.id, da.chapter, da.section, da.designation, da.unit,
                        da.ratio_type, da.row_order,
                        da.is_custom, da.qty_ref,
                        da.lot, da.last_updated,
-                       COALESCE(ro.pu_override, da.pu_ht_ref) AS pu_ht,
+                       da.pu_ht_ref AS pu_ht,
+                       ro.pu_override AS pu_override_global,
                        da.qty_ref AS quantity, NULL AS total_ht, 1 AS is_included,
                        ro.pu_override IS NOT NULL AS has_override,
                        ro.raison AS override_raison

@@ -6,11 +6,27 @@ let _modalLineId  = null;   // id ligne en cours d'édition dans le modal
 let _modalLot     = null;
 let _allCandidates = [];    // candidats chargés pour la ligne courante
 let _selectedArtId = null;  // article sélectionné dans le modal
+let _modalLineInfo = null;  // infos ligne devis (unit, pu, context_path, chapter, section)
+let _modalMode = 'suggestions'; // 'suggestions' | 'create'
+let _browseCache = null; // liste des articles du sous-chapitre (browse)
+let _browseOptions = null; // {chapters, sections, selected_chapter}
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  enableDraggableModal();
   if (PROJECT_ID) loadData();
 });
+
+/** En-têtes Excel (Nature « Titre » + ratio / vide, sans montant) — hors postes devis (voir app.py). */
+function isExcelStructureMetaRow(line) {
+  if (line.row_type !== 'article') return false;
+  const u = (line.unit || '').trim().toLowerCase();
+  if (u !== 'titre') return false;
+  const d = (line.original_designation || '').trim().toLowerCase();
+  if ((line.unit_price_ht || 0) || (line.total_ht || 0)) return false;
+  const ratioOnly = new Set(['surfacique', 'unitaire']);
+  return ratioOnly.has(d) || !d;
+}
 
 function goProject() {
   const sel = document.getElementById('sel-project');
@@ -44,7 +60,7 @@ function renderAll() {
   for (const chap of _data.chapters)
     for (const sec of chap.sections)
       for (const l of sec.lines)
-        if (l.row_type === 'article') {
+        if (l.row_type === 'article' && !isExcelStructureMetaRow(l)) {
           total++;
           if (l.mapping_status === 'excluded') exclu++;
           else if (l.mapping_status === 'auto' || l.mapping_status === 'manual') mapped++;
@@ -136,7 +152,9 @@ function renderSection(sec, chap_lot) {
 
   const tbody = table.querySelector('tbody');
   for (const line of sec.lines) {
-    if (line.row_type === 'article') tbody.appendChild(renderRow(line, chap_lot));
+    if (line.row_type === 'article' && !isExcelStructureMetaRow(line)) {
+      tbody.appendChild(renderRow(line, chap_lot));
+    }
   }
   return el;
 }
@@ -149,11 +167,10 @@ function renderRow(line, chap_lot) {
   const lot  = line.lot || chap_lot;
   const exclu = line.mapping_status === 'excluded';
 
-  // Col 1 — Désignation devis
+  // Col 1 — toujours le libellé importé depuis le devis (col. B), jamais la base DPGF
   const desig = line.original_designation || '—';
   const td1 = `<td class="col-desig" title="${esc(desig)}">
     <span class="cell-desig-text">${esc(trunc(desig, 35))}</span>
-    <span class="lot-badge lot-${lot}" style="margin-left:4px">${lot}</span>
   </td>`;
 
   // Col 2–5 — Numériques
@@ -164,10 +181,12 @@ function renderRow(line, chap_lot) {
 
   // Col 6 — Sélecteur base
   const hasMapped = !!line.base_designation;
+  const score = (line.mapping_score != null) ? parseFloat(line.mapping_score) : null;
+  const parsingOk = (score != null && !isNaN(score) && score >= 80);
+  const needsAttention = !exclu && (!hasMapped || !parsingOk || (line.mapping_status !== 'auto' && line.mapping_status !== 'manual'));
   const selText = hasMapped ? trunc(line.base_designation, 28) : '⊕ Sélectionner…';
   const td6 = `<td class="col-base">
-    <button class="btn-selector ${hasMapped ? 'mapped' : ''}"
-            onclick="openModal(${line.id}, '${esc(lot)}', '${esc(desig.replace(/'/g,"\\'")}'))"
+    <button class="btn-selector ${hasMapped ? 'mapped' : ''} ${needsAttention ? 'needs-attention' : ''}"
             id="sel-btn-${line.id}" ${exclu ? 'disabled style="opacity:.4;cursor:default"' : ''}>
       <span class="sel-text">${esc(selText)}</span>
       <span class="sel-icon">▾</span>
@@ -194,6 +213,13 @@ function renderRow(line, chap_lot) {
   </td>`;
 
   tr.innerHTML = td1 + td2 + td3 + td4 + td5 + td6 + td7 + td8 + td9 + td10;
+
+  // Bind click handler safely (avoid breaking HTML with apostrophes)
+  const btn = tr.querySelector(`#sel-btn-${line.id}`);
+  if (btn && !btn.disabled) {
+    btn.addEventListener('click', () => openModal(line.id, lot, desig));
+  }
+
   return tr;
 }
 
@@ -294,7 +320,26 @@ async function openModal(lineId, lot, rawDesig) {
   _modalLineId  = lineId;
   _modalLot     = lot;
   _selectedArtId = null;
+  _modalLineInfo = null;
+  _modalMode = 'suggestions';
+  _browseCache = null;
+  _browseOptions = null;
   document.getElementById('btn-confirm').disabled = true;
+
+  // Reset UI modes
+  document.getElementById('mv-create-form')?.classList.remove('open');
+  document.getElementById('btn-back-suggestions')?.classList.remove('show');
+  const btnCreateApply = document.getElementById('btn-create-apply');
+  if (btnCreateApply) btnCreateApply.style.display = 'none';
+  const btnConfirm = document.getElementById('btn-confirm');
+  if (btnConfirm) btnConfirm.style.display = '';
+  const searchWrap = document.querySelector('.modal-search-wrap');
+  if (searchWrap) searchWrap.style.display = '';
+  document.getElementById('modal-candidates').style.display = '';
+  const openCreateBtn = document.getElementById('btn-open-create');
+  if (openCreateBtn) openCreateBtn.style.display = '';
+  const synWrap = document.getElementById('syn-check-wrap');
+  if (synWrap) synWrap.style.display = '';
 
   // Remplir infos ligne
   document.getElementById('modal-raw-desig').textContent = rawDesig;
@@ -318,10 +363,18 @@ async function openModal(lineId, lot, rawDesig) {
     const r = await fetch(`/api/matching/line/${lineId}/candidates`);
     const d = await r.json();
     _allCandidates = d.candidates || [];
+    _modalLineInfo = d.line || null;
+
+    // Affiche chemin devis
+    const pathEl = document.getElementById('modal-devis-path');
+    if (pathEl) {
+      const rawPath = (_modalLineInfo && _modalLineInfo.context_path) ? String(_modalLineInfo.context_path) : '';
+      pathEl.textContent = rawPath ? rawPath.replace(/\s>\s/g, ' ➔ ') : '—';
+    }
 
     // Afficher désignation nettoyée si différente
     const cleanEl = document.getElementById('modal-clean-desig');
-    const cleaned = _allCandidates[0]?._cleaned || '';
+    const cleaned = d.cleaned_designation || '';
     cleanEl.style.display = cleaned && cleaned !== rawDesig ? 'block' : 'none';
     cleanEl.textContent = cleaned ? `→ nettoyé : "${cleaned}"` : '';
 
@@ -335,18 +388,39 @@ async function openModal(lineId, lot, rawDesig) {
 function renderCandidates(list) {
   const el = document.getElementById('modal-candidates');
   if (!list.length) {
-    el.innerHTML = '<div class="modal-loading">Aucun candidat trouvé dans ce lot.</div>';
+    const canBrowse = !!(_modalLineId);
+    el.innerHTML = `
+      <div class="create-cta-box">
+        <div class="cta-title">Aucun candidat pertinent dans ce lot.</div>
+        <div style="margin:10px 0 14px 0">Tu peux parcourir tous les articles du sous-chapitre (si détecté), ou créer un article personnalisé.</div>
+        <div id="browse-box"></div>
+        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:10px">
+          <button class="btn-create-article" onclick="openCreateArticleForm()">Créer un nouvel article</button>
+        </div>
+      </div>`;
+
+    if (canBrowse) {
+      ensureBrowseOptions().then(() => renderBrowseBox());
+    }
     return;
   }
   el.innerHTML = list.map(c => {
-    const scoreClass = c.score >= 80 ? 'score-high' : c.score >= 50 ? 'score-medium' : 'score-low';
     const puStr = c.pu_ht_ref ? `${fmt(c.pu_ht_ref)} €` : '—';
+    const breadcrumb = esc((c.breadcrumb && String(c.breadcrumb).trim()) || '');
+    const article = esc((c.designation && String(c.designation).trim()) || '');
+    const tip = esc((c.path && String(c.path).trim()) || c.designation || '');
+    const lot = esc((c.lot && String(c.lot).trim()) || '');
     return `<div class="candidate-row ${c.article_id === _selectedArtId ? 'selected' : ''}"
                  onclick="selectCandidate(${c.article_id}, this)"
                  data-id="${c.article_id}">
-      <span class="cand-score ${scoreClass}">${Math.round(c.score)}</span>
       <div class="cand-info">
-        <div class="cand-desig" title="${esc(c.designation)}">${esc(c.designation)}</div>
+        <div class="cand-topline">
+          ${lot ? `<span class="lot-badge lot-${lot} cand-lot">${lot}</span>` : ''}
+          <div class="cand-text">
+            ${breadcrumb ? `<div class="cand-breadcrumb" title="${tip}">${breadcrumb}</div>` : ''}
+            <div class="cand-article" title="${tip}">${article}</div>
+          </div>
+        </div>
         <div class="cand-meta">
           <span class="cand-pu">${puStr}</span>
           <span class="cand-unit">${c.unit || ''}</span>
@@ -359,10 +433,14 @@ function renderCandidates(list) {
 
 function filterCandidates() {
   const q = document.getElementById('modal-search').value.toLowerCase().trim();
-  if (!q) { renderCandidates(_allCandidates); return; }
-  renderCandidates(_allCandidates.filter(c =>
-    c.designation.toLowerCase().includes(q)
-  ));
+  const base = (_modalMode === 'browse' && _browseCache) ? _browseCache : _allCandidates;
+  if (!q) { renderCandidates(base); return; }
+  renderCandidates(base.filter(c => {
+    const path = (c.path || '').toLowerCase();
+    const bc   = (c.breadcrumb || '').toLowerCase();
+    const des  = (c.designation || '').toLowerCase();
+    return path.includes(q) || bc.includes(q) || des.includes(q);
+  }));
 }
 
 function selectCandidate(artId, rowEl) {
@@ -374,7 +452,294 @@ function selectCandidate(artId, rowEl) {
 
 function closeModal() {
   document.getElementById('modal-overlay').classList.remove('open');
-  _modalLineId = null; _modalLot = null; _selectedArtId = null;
+  _modalLineId = null; _modalLot = null; _selectedArtId = null; _modalLineInfo = null; _modalMode = 'suggestions';
+  _browseCache = null;
+  const btnCreateApply = document.getElementById('btn-create-apply');
+  if (btnCreateApply) btnCreateApply.style.display = 'none';
+  const btnConfirm = document.getElementById('btn-confirm');
+  if (btnConfirm) btnConfirm.style.display = '';
+  const synWrap = document.getElementById('syn-check-wrap');
+  if (synWrap) synWrap.style.display = '';
+}
+
+async function browseSectionArticles() {
+  if (!_modalLineId) return;
+  try {
+    // IMPORTANT: lire la sélection AVANT de modifier le DOM (sinon <select> supprimé)
+    const lot = getSelectedBrowseLot() || (_modalLineInfo && _modalLineInfo.lot) || _modalLot || 'CFO';
+    const choice = getSelectedBrowseSection();
+    if (!choice) { toast('Choisir un sous-chapitre.', 'err'); return; }
+    const parts = choice.split('|||');
+    const chapter = (parts[0] || '').trim();
+    const section = (parts[1] || '').trim();
+    if (!chapter || !section) { toast('Choisir un sous-chapitre.', 'err'); return; }
+
+    // feedback (après lecture sélection)
+    const el = document.getElementById('modal-candidates');
+    if (el) el.innerHTML = '<div class="modal-loading">⏳ Chargement du sous-chapitre…</div>';
+
+    const qs = new URLSearchParams();
+    if (lot) qs.set('lot', lot);
+    if (chapter) qs.set('chapter', chapter);
+    if (section) qs.set('section', section);
+    const url = `/api/matching/line/${_modalLineId}/section_articles?` + qs.toString();
+    const r = await fetch(url);
+    const d = await r.json();
+    _browseCache = d.articles || [];
+    _modalMode = 'browse';
+    // reset search to make browsing easier
+    const search = document.getElementById('modal-search');
+    if (search) search.value = '';
+    renderCandidates(_browseCache);
+    if (!_browseCache.length) {
+      toast(`Aucun article trouvé pour "${chapter} ➔ ${section}" (lot ${lot}).`, 'err');
+    }
+  } catch (e) {
+    toast(e.message || 'Erreur', 'err');
+  }
+}
+
+async function ensureBrowseOptions() {
+  if (_browseOptions || !_modalLineId) return;
+  try {
+    const r = await fetch(`/api/matching/line/${_modalLineId}/browse_options`);
+    const d = await r.json();
+    _browseOptions = d;
+  } catch {
+    _browseOptions = { chapters: [], sections: [], selected_chapter: null };
+  }
+}
+
+function renderBrowseBox() {
+  const box = document.getElementById('browse-box');
+  if (!box) return;
+  const opt = _browseOptions || {};
+  const sectionChoices = opt.section_choices || [];
+  const lot = (opt.lot || (_modalLineInfo && _modalLineInfo.lot) || _modalLot || 'CFO');
+
+  const secOptions = ['<option value="">— Choisir un sous-chapitre —</option>'].concat(
+    sectionChoices.map(o => {
+      const v = `${o.chapter}|||${o.section}`;
+      return `<option value="${esc(v)}">${esc(o.label)}</option>`;
+    })
+  ).join('');
+
+  box.innerHTML = `
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <select id="sel-browse-lot" style="background:#1a2d38;border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#eee;padding:8px 10px;min-width:120px" onchange="onBrowseLotChange()">
+        <option value="CFO" ${lot === 'CFO' ? 'selected' : ''}>CFO</option>
+        <option value="CFA" ${lot === 'CFA' ? 'selected' : ''}>CFA</option>
+        <option value="PV"  ${lot === 'PV'  ? 'selected' : ''}>PV</option>
+      </select>
+      <select id="sel-browse-section" style="background:#1a2d38;border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#eee;padding:8px 10px;min-width:420px" onchange="onBrowseSectionChange()">
+        ${secOptions}
+      </select>
+      <button class="btn-create-article" onclick="browseSectionArticles()">Afficher</button>
+    </div>
+    <div style="font-size:11px;color:#6f7f88;margin-top:8px">
+      Si le devis nomme le sous-chapitre différemment de la base, choisis-le ici pour parcourir les articles correspondants.
+    </div>`;
+}
+
+async function onBrowseLotChange() {
+  const lot = getSelectedBrowseLot();
+  if (!_modalLineId || !lot) return;
+  try {
+    const r = await fetch(`/api/matching/line/${_modalLineId}/browse_options?` + new URLSearchParams({ lot }).toString());
+    const d = await r.json();
+    _browseOptions = d;
+  } catch {}
+  renderBrowseBox();
+}
+
+function getSelectedBrowseSection() {
+  const el = document.getElementById('sel-browse-section');
+  return el ? (el.value || '').trim() : '';
+}
+function getSelectedBrowseLot() {
+  const el = document.getElementById('sel-browse-lot');
+  return el ? (el.value || '').trim() : '';
+}
+
+function onBrowseSectionChange() {
+  const el = document.getElementById('sel-browse-section');
+}
+
+function enableDraggableModal() {
+  const overlay = document.getElementById('modal-overlay');
+  const modal = overlay ? overlay.querySelector('.mv-modal') : null;
+  const header = overlay ? overlay.querySelector('.mv-modal-header') : null;
+  if (!overlay || !modal || !header) return;
+
+  let dragging = false;
+  let startX = 0, startY = 0;
+  let startLeft = 0, startTop = 0;
+
+  function onMove(e) {
+    if (!dragging) return;
+    const x = e.clientX;
+    const y = e.clientY;
+    const dx = x - startX;
+    const dy = y - startY;
+    modal.style.left = `${startLeft + dx}px`;
+    modal.style.top = `${startTop + dy}px`;
+  }
+
+  function onUp() {
+    dragging = false;
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  }
+
+  header.addEventListener('mousedown', (e) => {
+    // only when modal open
+    if (!overlay.classList.contains('open')) return;
+    // ignore click on close button
+    if ((e.target && e.target.closest && e.target.closest('.btn-close-modal'))) return;
+    const rect = modal.getBoundingClientRect();
+    modal.style.position = 'fixed';
+    modal.style.margin = '0';
+    modal.style.left = `${rect.left}px`;
+    modal.style.top = `${rect.top}px`;
+    modal.style.transform = 'none';
+
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    startLeft = rect.left;
+    startTop = rect.top;
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+}
+
+function openCreateArticleForm() {
+  _modalMode = 'create';
+  document.getElementById('btn-confirm').disabled = true;
+  document.getElementById('btn-back-suggestions')?.classList.add('show');
+  const btnCreateApply = document.getElementById('btn-create-apply');
+  if (btnCreateApply) btnCreateApply.style.display = '';
+  const btnConfirm = document.getElementById('btn-confirm');
+  if (btnConfirm) btnConfirm.style.display = 'none';
+  const synWrap = document.getElementById('syn-check-wrap');
+  if (synWrap) synWrap.style.display = 'none';
+
+  // Masquer recherche + suggestions
+  const searchWrap = document.querySelector('.modal-search-wrap');
+  if (searchWrap) searchWrap.style.display = 'none';
+  document.getElementById('modal-candidates').style.display = 'none';
+  const openCreateBtn = document.getElementById('btn-open-create');
+  if (openCreateBtn) openCreateBtn.style.display = 'none';
+
+  // Ouvrir form
+  const form = document.getElementById('mv-create-form');
+  form?.classList.add('open');
+
+  const lot = (_modalLineInfo && _modalLineInfo.lot) ? _modalLineInfo.lot : _modalLot;
+  const ctx = (_modalLineInfo && _modalLineInfo.context_path) ? _modalLineInfo.context_path : '';
+  const chapter = (_modalLineInfo && _modalLineInfo.chapter) ? _modalLineInfo.chapter : '';
+  const section = (_modalLineInfo && _modalLineInfo.section) ? _modalLineInfo.section : '';
+  const unit = (_modalLineInfo && _modalLineInfo.unit) ? _modalLineInfo.unit : 'u';
+  const pu = (_modalLineInfo && _modalLineInfo.unit_price_ht != null) ? _modalLineInfo.unit_price_ht : '';
+
+  // context display with ➔
+  const ctxNice = (ctx || '').replace(/\s>\s/g, ' ➔ ');
+
+  document.getElementById('mv-create-lot').innerHTML =
+    `<span class="lot-badge lot-${esc(lot)}">${esc(lot)}</span>`;
+  document.getElementById('mv-create-context').textContent = ctxNice || '—';
+
+  const rawDesig = document.getElementById('modal-raw-desig').textContent || '';
+  const cleaned = document.getElementById('modal-clean-desig').textContent || '';
+  const pref = (cleaned && cleaned.includes('→ nettoyé :')) ? cleaned.replace('→ nettoyé :', '').replace(/"/g, '').trim() : rawDesig;
+
+  document.getElementById('inp-create-designation').value = pref || '';
+  document.getElementById('inp-create-unit').value = unit || 'u';
+  document.getElementById('inp-create-pu').value = (pu === '' || pu == null) ? '' : String(pu).replace('.', ',');
+  document.getElementById('inp-create-chapter').value = chapter || '';
+  document.getElementById('inp-create-section').value = section || '';
+
+  hideCreateError();
+}
+
+function backToSuggestions() {
+  _modalMode = 'suggestions';
+  document.getElementById('btn-back-suggestions')?.classList.remove('show');
+  const btnCreateApply = document.getElementById('btn-create-apply');
+  if (btnCreateApply) btnCreateApply.style.display = 'none';
+  const btnConfirm = document.getElementById('btn-confirm');
+  if (btnConfirm) btnConfirm.style.display = '';
+  const synWrap = document.getElementById('syn-check-wrap');
+  if (synWrap) synWrap.style.display = '';
+
+  const searchWrap = document.querySelector('.modal-search-wrap');
+  if (searchWrap) searchWrap.style.display = '';
+  document.getElementById('modal-candidates').style.display = '';
+
+  document.getElementById('mv-create-form')?.classList.remove('open');
+  const openCreateBtn = document.getElementById('btn-open-create');
+  if (openCreateBtn) openCreateBtn.style.display = '';
+
+  hideCreateError();
+}
+
+function showCreateError(msg) {
+  const el = document.getElementById('mv-create-error');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+function hideCreateError() {
+  const el = document.getElementById('mv-create-error');
+  if (!el) return;
+  el.textContent = '';
+  el.classList.remove('show');
+}
+
+async function createAndApplyArticle() {
+  if (!_modalLineId) return;
+  const designation = (document.getElementById('inp-create-designation').value || '').trim();
+  const unit = (document.getElementById('inp-create-unit').value || '').trim();
+  const puRaw = (document.getElementById('inp-create-pu').value || '').trim();
+  const chapter = (document.getElementById('inp-create-chapter').value || '').trim();
+  const section = (document.getElementById('inp-create-section').value || '').trim();
+
+  if (!designation) { showCreateError('La désignation est obligatoire.'); return; }
+  if (!unit) { showCreateError('L’unité est obligatoire.'); return; }
+  if (!chapter) { showCreateError('Le chapitre est requis pour créer un article.'); return; }
+
+  let puVal = 0;
+  if (puRaw) {
+    const n = parseFloat(puRaw.replace(/\s/g,'').replace(',', '.'));
+    if (isNaN(n) || n < 0) { showCreateError('Le PU doit être un nombre positif.'); return; }
+    puVal = n;
+  }
+
+  hideCreateError();
+
+  try {
+    const btnCreateApply = document.getElementById('btn-create-apply');
+    if (btnCreateApply) btnCreateApply.disabled = true;
+    const r = await fetch(`/api/matching/line/${_modalLineId}/create_article`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ designation, unit, pu_ht: puVal, chapter, section }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.status !== 'ok') throw new Error(d.error || 'Erreur serveur');
+
+    updateRowAfterSelect(_modalLineId, d);
+    toast('✓ Article créé et appliqué à la ligne devis.', 'ok');
+    closeModal();
+    refreshStats();
+  } catch (e) {
+    showCreateError(e.message);
+  } finally {
+    const btnCreateApply = document.getElementById('btn-create-apply');
+    if (btnCreateApply) btnCreateApply.disabled = false;
+  }
 }
 
 async function confirmSelection() {
