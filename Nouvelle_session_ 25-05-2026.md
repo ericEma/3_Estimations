@@ -53,3 +53,7 @@ node --check static/js/bibliotheque.js
 - Backend : `app.py`, `models.py`, `estimation_layout.py`, `estimation_promote.py`.
 - Frontend : `templates/affaire_new.html`, `templates/affaire_estimation.html`, `templates/index.html`, `static/js/affaire_estimation.js`, `static/js/bibliotheque.js`, `static/css/style.css`.
 - Tests : `tests/test_affaire_preview_ratios.py`, `tests/test_estimation_snapshot.py`, `tests/test_estimation_promote.py`, `tests/test_bibliotheque_section_move.py`.
+
+## Règle Git ajoutée
+- Les bases SQLite doivent être sauvegardées sur Git : `estimation_elec.db` et `estimation.db` si présent.
+- Les Excel, captures et backups locaux restent hors commit sauf demande explicite.

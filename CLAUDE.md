@@ -333,3 +333,6 @@ node --check static/js/bibliotheque.js
 - Export Excel page Estimation : exporter l'état snapshot/layout réel, pas le calculateur legacy.
 - Feedback visuel `saving…` sur autosaves.
 
+### Règle Git — bases SQLite
+- À partir du 2026-05-25, les bases SQLite du projet sont aussi sauvegardées dans Git : `estimation_elec.db` et, si présent, `estimation.db`.
+- Les fichiers Excel, captures PNG et backups locaux restent hors commit sauf demande explicite.

@@ -372,3 +372,7 @@ ratio_overrides (id, dpgf_article_id, pu_override, raison, created_at)
 2. Le `chapter_settings` est auto-sauvé en debounce 600 ms ; pas de feedback visuel.
 3. `total_estime_ht` est `NULL` pour les affaires jamais sauvegardées depuis Sprint 8
    → COALESCE se rabat sur `SUM(affaire_lines)` automatiquement.
+
+### Règle de sauvegarde Git validée
+
+À partir du 2026-05-25, les bases SQLite doivent être incluses dans les sauvegardes Git : `estimation_elec.db` et `estimation.db` si présent. Les fichiers Excel, captures d'écran et backups locaux restent exclus sauf demande explicite.

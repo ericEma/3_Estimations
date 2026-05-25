@@ -137,3 +137,6 @@ Règle importante : une affaire initialisée ne resynchronise pas ses prix depui
    - `node --check static/js/affaire_estimation.js`
    - `node --check static/js/bibliotheque.js`
 
+### Versionnement Git des bases
+
+Décision Eric du 2026-05-25 : les fichiers SQLite (`estimation_elec.db`, et `estimation.db` si présent) sont versionnés avec le code afin de sauvegarder l'état réel de l'application et des données de référence.
