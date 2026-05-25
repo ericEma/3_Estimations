@@ -2,6 +2,8 @@
 
 **Moteur** : SQLite 3 (`estimation_elec.db`), accès via `sqlite3` natif (pas d’ORM).
 
+**État documenté** : 2026-05-25 — fiche affaire, page estimation snapshot/layout, bibliothèque DPGF et matching.
+
 ## Foreign keys
 
 - SQLite **n’active pas** les contraintes de clés étrangères par défaut.
@@ -60,8 +62,8 @@
 
 ### Limite actuelle & évolution possible (non implémentée)
 
-- Aujourd’hui **`dpgf_article_id` est `NOT NULL`** : toute ligne d’estimation doit pointer vers un article du référentiel (y compris articles **custom** créés dans `dpgf_articles`).
-- Si le métier exige des **lignes sur-mesure sans ligne `dpgf_articles`**, il faudrait une **migration** (FK nullable + contrainte `CHECK` + champs snapshot sur la ligne, ou politique « toujours créer un `dpgf_articles` minimal »). Toute évolution doit rester **FK-safe** (`PRAGMA foreign_keys`, tests sur `save_affaire_lines` / UI).
+- Aujourd’hui **`dpgf_article_id` peut être NULL** pour les lignes affaire-only de la page Estimation (`line_chapter`, `line_section`, `line_designation`). Les lignes catalogue restent liées à `dpgf_articles`.
+- Les lignes sur-mesure hors arbre ont été masquées côté UI estimation; les lignes affaire-only de l'arbre peuvent ensuite être promues vers `dpgf_articles`. Toute évolution doit rester **FK-safe** (`PRAGMA foreign_keys`, tests sur `save_affaire_lines` / UI).
 
 ## Fichiers de référence
 
@@ -74,3 +76,64 @@
 ---
 
 **Jalon projet** : description alignée sur l’état **2026-05-02** (Bibliothèque DPGF validée côté UX ; suppression de section et transactions décrites ci-dessus opérationnelles). Voir aussi `CURRENT_STATE.md`.
+---
+
+## État applicatif — 2026-05-25
+
+### Flux principaux
+
+| Flux | Frontend | Backend/API | Tables principales | Rôle |
+|---|---|---|---|---|
+| Dashboard affaires | `templates/index.html` | `/`, `/api/affaire/<id>/delete` | `affaires`, `affaire_lines` | Liste des affaires, bouton `Fiche`, bouton `Estimer`, suppression affaire. |
+| Fiche affaire | `templates/affaire_new.html`, `complexity_scale.js`, `pv_system_scale.js` | `/affaire/new`, `/affaire/<id>/edit`, `/api/affaire/preview_estimation` | `affaires`, `building_categories` | Paramétrage projet, ratios globaux CFO/CFA/PV, preview budgétaire. |
+| Page Estimation | `templates/affaire_estimation.html`, `static/js/affaire_estimation.js` | `/affaire/<id>/estimation`, `/api/affaire/<id>/estimation/save`, `/params`, `/chapter_settings`, `/estimation/layout`, `/estimation/promote` | `affaires`, `affaire_lines`, `affaire_chapter_settings`, `affaire_estimation_section_sort`, `dpgf_articles` | Saisie snapshot par affaire, macro sections, layout local, promotion base de prix. |
+| Bibliothèque DPGF | `templates/bibliotheque.html`, `static/js/bibliotheque.js` | `/bibliotheque`, `/bibliotheque/<id>`, `/api/bibliotheque/save`, `/api/bibliotheque/article/delete` | `dpgf_articles`, `ratio_overrides`, `bibliotheque_section_ratios`, `affaire_lines` | Référentiel de prix, ratios section, ajouts custom, suppression/masquage, déplacement section. |
+| Matching import devis | `templates/matching_view.html`, `static/js/matching.js` | `/matching`, `/api/matching/*` | `projects`, `devis_lines`, `dpgf_articles`, `mapping_*` | Revue post-import, affectation DPGF, PU pondéré manuel. |
+
+### Colonnes clés ajoutées sur `affaires`
+
+- `kva_cible` : puissance TGBT indicative.
+- `puissance_pv_kwc` : diviseur PV en kWc.
+- `pv_system_type` : `toiture`, `ib`, `ombriere`.
+- `phase_etude`, `taux_phase`, `taux_incertitude`, `coef_risque` : provisions cumulatives.
+- `ratio_global_cfo_m2`, `ratio_global_cfa_m2`, `ratio_global_pv_kwc` : ratios fiche affaire pour la preview uniquement.
+- `estimation_initialized_at` : marque le snapshot page estimation.
+- `total_estime_ht` : total dashboard sauvegardé, avec fallback COALESCE.
+
+### `affaire_lines` — snapshot et layout local
+
+`affaire_lines` accepte désormais deux familles de lignes :
+
+- **Lignes catalogue snapshot** : `dpgf_article_id` renseigné, `ratio_ref` figé, `quantity`, `unit_price_ht`, `line_designation` override optionnel.
+- **Lignes arbre affaire-only** : `dpgf_article_id` NULL, `line_chapter`, `line_section`, `line_designation`, `unit_override`, `line_lot`, `sort_order`. Elles servent aux sections/articles créés dans une affaire avant promotion.
+
+Règle importante : une affaire initialisée ne resynchronise pas ses prix depuis la bibliothèque; `ratio_ref` est la référence de l'affaire.
+
+### `affaire_chapter_settings`
+
+- Clés `chap:<chapter>` : inclusion chapitre.
+- Clés `sect:<chapter>|<section>` : inclusion section, `use_macro`, `qty`, `ratio_m2_override`, `is_local`.
+- Macro section : si aucun article de la section n'a un total positif, total = `ratio_m2_override × qty`; sinon total = somme articles.
+
+### `affaire_estimation_section_sort`
+
+- Table d'ordre local par affaire : `(affaire_id, chapter, section, sort_order)`.
+- Source pour afficher la page Estimation et pour promouvoir une section au bon endroit dans `dpgf_articles.row_order`.
+
+### `dpgf_articles.row_order`
+
+- La bibliothèque trie par `chapter, row_order`.
+- Les déplacements de section dans `/bibliotheque` réécrivent les `row_order` visibles du chapitre.
+- La promotion d'une section locale décale les `row_order` suivants pour insérer la nouvelle section à la position validée côté estimation.
+
+### Garde-fous avant évolution
+
+1. Ne pas mélanger la fiche affaire (preview vivante) et la page estimation (snapshot figé).
+2. Ne pas remplacer une logique section-first par une somme chapitre directe.
+3. Ne pas supprimer physiquement les articles PSA : utiliser `is_hidden=1`.
+4. Toute migration touchant une table avec FK doit rester FK-safe et testée.
+5. Lancer au minimum :
+   - `python -m unittest tests.test_affaire_preview_ratios tests.test_estimation_snapshot tests.test_estimation_promote tests.test_bibliotheque_section_move -v`
+   - `node --check static/js/affaire_estimation.js`
+   - `node --check static/js/bibliotheque.js`
+

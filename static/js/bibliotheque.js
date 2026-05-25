@@ -121,6 +121,15 @@ function buildTree(articles) {
   return tree;
 }
 
+function sectionNamesForChapter(chap) {
+  const names = [];
+  for (const a of localData) {
+    if (a.chapter !== chap) continue;
+    if (!names.includes(a.section)) names.push(a.section);
+  }
+  return names;
+}
+
 function filteredArticles() {
   if (!searchQ) return localData;
   const q = searchQ.toLowerCase();
@@ -155,6 +164,12 @@ function markNew(art) {
 function markSectionRatio(chapter, section, ratio, ratioUnit) {
   const key = `secRatio__${chapter}|||${section}`;
   dirtyMap.set(key, { id: null, field: 'section_ratio', chapter, section, value: ratio, ratio_unit: ratioUnit });
+  schedSave();
+}
+
+function markSectionMove(chapter, section, direction) {
+  const key = `secmove__${chapter}|||${section}|||${Date.now()}`;
+  dirtyMap.set(key, { id: null, field: 'section_move', chapter, section, direction });
   schedSave();
 }
 
@@ -286,6 +301,10 @@ function render() {
               <span class="sec-label" title="Double-cliquer pour renommer"
                 onclick="event.stopPropagation();startSecNameEdit(this,'${escJ(chap)}','${escJ(sec)}')">${esc(sec)}</span>
               <span class="sec-count">${secArts.length} art.</span>
+              <button class="bibl-sec-move-btn" title="Monter la section"
+                onclick="event.stopPropagation();moveSection('${escJ(chap)}','${escJ(sec)}','up')">▲</button>
+              <button class="bibl-sec-move-btn" title="Descendre la section"
+                onclick="event.stopPropagation();moveSection('${escJ(chap)}','${escJ(sec)}','down')">▼</button>
               <button class="add-row-btn" title="Ajouter un article dans cette section"
                 onclick="event.stopPropagation();addArticle('${escJ(chap)}','${escJ(sec)}')">+</button>
               <button class="add-sec-btn" title="Nouvelle section après celle-ci"
@@ -683,6 +702,39 @@ function deleteSection(chap, sec) {
   }
 }
 
+/* ── DÉPLACEMENT SECTION (+ tous ses articles) ───────────────────────────── */
+function moveSection(chap, sec, direction) {
+  const sections = sectionNamesForChapter(chap);
+  const idx = sections.indexOf(sec);
+  if (idx === -1) return;
+  const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+  if (swapIdx < 0 || swapIdx >= sections.length) return;
+
+  const targetSec = sections[swapIdx];
+  const currentArts = localData.filter(a => a.chapter === chap && a.section === sec);
+  const targetArts = localData.filter(a => a.chapter === chap && a.section === targetSec);
+  const movedBlock = direction === 'up'
+    ? currentArts.concat(targetArts)
+    : targetArts.concat(currentArts);
+
+  const nextData = [];
+  let inserted = false;
+  for (const a of localData) {
+    const isMovedSection = a.chapter === chap && (a.section === sec || a.section === targetSec);
+    if (isMovedSection) {
+      if (!inserted) {
+        nextData.push(...movedBlock);
+        inserted = true;
+      }
+      continue;
+    }
+    nextData.push(a);
+  }
+  localData = nextData;
+  markSectionMove(chap, sec, direction);
+  render();
+}
+
 /* ── AJOUT SECTION après une section existante ───────────────────────────── */
 function addSectionAfter(chap, afterSec) {
   const secName = prompt('Nom de la nouvelle section :', '');
@@ -978,7 +1030,7 @@ document.getElementById('kwc-inp').addEventListener('input', function() {
     fetch(`/api/affaire/${AFFAIRE_ID}/params`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ kva_cible: kwc }),
+      body:    JSON.stringify({ puissance_pv_kwc: kwc }),
     })
     .then(r => r.ok ? null : Promise.reject(r.status))
     .catch(err => console.error('[bibliotheque] kwc save failed', err));

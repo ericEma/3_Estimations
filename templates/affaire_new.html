@@ -1,22 +1,17 @@
 {% extends "base.html" %}
-{% block title %}{% if edit_mode %}Modifier — {{ affaire.name }}{% else %}Nouvelle Affaire{% endif %}{% endblock %}
+{% block title %}{% if edit_mode %}Modifier — {{ affaire.name }}{% else %}Nouvelle estimation{% endif %}{% endblock %}
+{% block page_subtitle %}{% if edit_mode %}Fiche affaire{% else %}Nouvelle estimation{% endif %}{% endblock %}
 
-{% block topbar %}
-<div class="topbar">
-  <div>
-    {% if edit_mode %}
-    <a href="{{ url_for('affaire_estimation', affaire_id=affaire.id) }}" style="color:var(--text-muted);font-size:13px">← Retour à l'estimation</a>
-    <span class="topbar-title" style="margin-left:12px">Modifier la fiche</span>
-    {% else %}
-    <a href="{{ url_for('index') }}" style="color:var(--text-muted);font-size:13px">← Affaires</a>
-    <span class="topbar-title" style="margin-left:12px">Nouvelle Affaire</span>
-    {% endif %}
-  </div>
-</div>
+{% block header_actions %}
+{% if edit_mode %}
+<a class="h-home" href="{{ url_for('affaire_estimation', affaire_id=affaire.id) }}">← Estimation</a>
+{% else %}
+<a class="h-home" href="{{ url_for('index') }}">← Accueil</a>
+{% endif %}
 {% endblock %}
 
 {% block content %}
-<div class="content" style="max-width:860px">
+<div class="page-panel" style="max-width:860px">
 
   <div class="page-header">
     <div>
@@ -48,7 +43,7 @@
         </div>
         <div class="form-group">
           <label>Type de bâtiment</label>
-          <select name="category_id" class="form-control">
+          <select name="category_id" id="select-category" class="form-control">
             <option value="">— Sélectionner —</option>
             {% for cat in categories %}
             <option value="{{ cat.id }}"
@@ -67,13 +62,13 @@
     <!-- Surfaces & Puissance -->
     <div class="card" style="margin-bottom:16px">
       <div class="card-header"><span class="card-title">📐 Surfaces & Puissance</span></div>
-      <div class="form-grid">
+      <div class="form-grid form-grid-3">
         <div class="form-group">
           <label>Surface SDO (m²) *</label>
           <input type="number" name="surface_sdo" class="form-control"
                  value="{{ affaire.surface_sdo | int if edit_mode else 1000 }}"
                  min="100" step="50" required
-                 oninput="updateDensityPreview(this.value)">
+                 oninput="updatePreview()">
           <span class="form-hint">Surface de plancher utile — base de tous les ratios</span>
         </div>
         <div class="form-group">
@@ -84,7 +79,63 @@
                    min="50" max="5000" step="50" style="width:100px">
             <span style="color:var(--text-muted);font-size:13px">kVA</span>
           </div>
-          <span class="form-hint">Puissance TGBT estimée</span>
+          <span class="form-hint">Puissance TGBT estimée (référence future)</span>
+        </div>
+        <div class="form-group">
+          <label>Puissance photovoltaïque (kWc)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" name="puissance_pv_kwc" id="input-pv-kwc"
+                   class="form-control preview-input"
+                   value="{{ (affaire.puissance_pv_kwc or 100) | int if edit_mode else 100 }}"
+                   min="0" max="50000" step="10" style="width:100px">
+            <span style="color:var(--text-muted);font-size:13px">kWc</span>
+          </div>
+          <span class="form-hint">Diviseur des ratios €/kWc — chapitre Photovoltaïque</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ratios globaux -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header">
+        <span class="card-title">📏 Ratios globaux de référence</span>
+        <span style="font-size:12px;color:var(--text-muted)">
+          Base lot avant complexité, type PV et provisions
+        </span>
+      </div>
+      <div class="form-grid form-grid-3">
+        <div class="form-group">
+          <label>Ratio CFO (€/m²)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" name="ratio_global_cfo_m2"
+                   class="form-control preview-input"
+                   value="{{ '%.2f'|format(preview_ratio_global_cfo_m2) }}"
+                   min="0" step="0.01" style="width:110px">
+            <span style="color:var(--text-muted);font-size:13px">€/m²</span>
+          </div>
+          <span class="form-hint">Base Courants Forts × SDO</span>
+        </div>
+        <div class="form-group">
+          <label>Ratio CFA (€/m²)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" name="ratio_global_cfa_m2"
+                   class="form-control preview-input"
+                   value="{{ '%.2f'|format(preview_ratio_global_cfa_m2) }}"
+                   min="0" step="0.01" style="width:110px">
+            <span style="color:var(--text-muted);font-size:13px">€/m²</span>
+          </div>
+          <span class="form-hint">Base Courants faibles × SDO</span>
+        </div>
+        <div class="form-group">
+          <label>Ratio PV (€/kWc)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" name="ratio_global_pv_kwc"
+                   class="form-control preview-input"
+                   value="{{ '%.2f'|format(preview_ratio_global_pv_kwc) }}"
+                   min="0" step="0.01" style="width:110px">
+            <span style="color:var(--text-muted);font-size:13px">€/kWc</span>
+          </div>
+          <span class="form-hint">Base Photovoltaïque × puissance kWc</span>
         </div>
       </div>
     </div>
@@ -94,7 +145,7 @@
       <div class="card-header">
         <span class="card-title">📊 Provisions & Phase d'étude</span>
         <span style="font-size:12px;color:var(--text-muted)">
-          Les 3 taxes sont indépendantes et cumulatives sur le Total HT
+          Les 3 coefficients ci-dessous sont indépendants et cumulatifs sur le Total HT
         </span>
       </div>
       <div class="form-grid">
@@ -112,7 +163,7 @@
           <label>Taux Phase (%)</label>
           <div style="display:flex;gap:8px;align-items:center">
             <input type="number" name="taux_phase" id="input-taux-phase"
-                   class="form-control"
+                   class="form-control preview-input"
                    value="{{ '%.1f'|format(affaire.taux_phase) if edit_mode else 3 }}"
                    min="0" max="20" step="0.5" style="width:80px">
             <span style="color:var(--text-muted);font-size:13px">%</span>
@@ -123,7 +174,7 @@
           <label>Taux Incertitude (%)</label>
           <div style="display:flex;gap:8px;align-items:center">
             <input type="number" name="taux_incertitude" id="input-incertitude"
-                   class="form-control"
+                   class="form-control preview-input"
                    value="{{ '%.1f'|format(affaire.taux_incertitude) if edit_mode else 3 }}"
                    min="0" max="50" step="0.5" style="width:80px">
             <span style="color:var(--text-muted);font-size:13px">%</span>
@@ -133,7 +184,8 @@
         <div class="form-group">
           <label>Taux Risque / Aléa (%)</label>
           <div style="display:flex;gap:8px;align-items:center">
-            <input type="number" name="coef_risque" class="form-control"
+            <input type="number" name="coef_risque" id="input-risque"
+                   class="form-control preview-input"
                    value="{{ '%.1f'|format(affaire.coef_risque) if edit_mode else 1 }}"
                    min="0" max="30" step="0.5" style="width:80px">
             <span style="color:var(--text-muted);font-size:13px">%</span>
@@ -154,73 +206,79 @@
 
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px">
 
-        <!-- CFO -->
-        <div>
-          <div style="font-size:13px;font-weight:700;color:var(--lot-cfo);margin-bottom:10px">
-            ⚡ CFO — Courants Forts
+        {% for lot, icon, title, color in [
+          ('cfo', '⚡', 'CFO — Courants Forts', 'var(--lot-cfo)'),
+          ('cfa', '📡', 'CFA — Courants Faibles / SSI', 'var(--lot-cfa)'),
+          ('pv', '☀️', 'PV — Photovoltaïque', 'var(--lot-pv)')
+        ] %}
+        <div class="cplx-lot-block">
+          <div style="font-size:13px;font-weight:700;color:{{ color }};margin-bottom:10px">
+            {{ icon }} {{ title }}
           </div>
-          <input type="range" name="coef_complexity_cfo" class="complexity-slider"
-                 min="0.7" max="1.5" step="0.1"
-                 value="{{ affaire.coef_complexity_cfo if edit_mode else 1.0 }}"
-                 oninput="updateSliderLabel('cfo', this.value)">
+          {% if lot == 'pv' %}
+          {% set pv_sel = affaire.pv_system_type if edit_mode else 'toiture' %}
+          <input type="range" class="complexity-slider" data-pv-system-slider
+                 aria-label="Type de système PV">
+          <input type="hidden" name="pv_system_type" value="{{ pv_sel or 'toiture' }}">
+          <input type="hidden" name="coef_complexity_pv" value="1.0">
           <div class="slider-labels">
-            <span>Simple (×0.7)</span>
-            <span id="label-cfo" style="color:var(--lot-cfo);font-weight:700">×1.0</span>
-            <span>Complexe (×1.5)</span>
+            <span>Toiture ×1,0</span>
+            <span id="label-pv-system" style="color:{{ color }};font-weight:700">×1,0</span>
+            <span>Ombrière ×1,55</span>
           </div>
-          <div style="margin-top:8px;font-size:12px;color:var(--text-muted)" id="hint-cfo">
-            Complexité standard hospitalier
-          </div>
-        </div>
-
-        <!-- CFA -->
-        <div>
-          <div style="font-size:13px;font-weight:700;color:var(--lot-cfa);margin-bottom:10px">
-            📡 CFA — Courants Faibles / SSI
-          </div>
-          <input type="range" name="coef_complexity_cfa" class="complexity-slider"
-                 min="0.7" max="1.5" step="0.1"
-                 value="{{ affaire.coef_complexity_cfa if edit_mode else 1.0 }}"
-                 oninput="updateSliderLabel('cfa', this.value)">
+          <div style="margin-top:6px;font-size:11.5px;font-weight:600;color:var(--text-sub,#93AEBA)" id="term-pv">Toiture surimposée</div>
+          <div style="margin-top:6px;font-size:12px;color:var(--text-muted);line-height:1.35" id="hint-pv">Ratio de référence</div>
+          {% else %}
+          <input type="range" class="complexity-slider" data-cplx-slider="{{ lot }}"
+                 aria-label="Complexité {{ lot }}">
+          <input type="hidden" name="coef_complexity_{{ lot }}"
+                 value="{{ affaire['coef_complexity_' ~ lot] if edit_mode else 1.0 }}">
           <div class="slider-labels">
-            <span>Simple</span>
-            <span id="label-cfa" style="color:var(--lot-cfa);font-weight:700">×1.0</span>
-            <span>Complexe</span>
+            <span>Coque ×0,75</span>
+            <span id="label-{{ lot }}" style="color:{{ color }};font-weight:700">×1,0</span>
+            <span>Prestige ×1,55</span>
           </div>
-          <div style="margin-top:8px;font-size:12px;color:var(--text-muted)" id="hint-cfa">
-            Complexité standard hospitalier
-          </div>
+          <div style="margin-top:6px;font-size:11.5px;font-weight:600;color:var(--text-sub,#93AEBA)" id="term-{{ lot }}">Standard occupant</div>
+          <div style="margin-top:6px;font-size:12px;color:var(--text-muted);line-height:1.35" id="hint-{{ lot }}"></div>
+          {% endif %}
         </div>
-
-        <!-- PV -->
-        <div>
-          <div style="font-size:13px;font-weight:700;color:var(--lot-pv);margin-bottom:10px">
-            ☀️ PV — Photovoltaïque
-          </div>
-          <input type="range" name="coef_complexity_pv" class="complexity-slider"
-                 min="0.7" max="1.5" step="0.1"
-                 value="{{ affaire.coef_complexity_pv if edit_mode else 1.0 }}"
-                 oninput="updateSliderLabel('pv', this.value)">
-          <div class="slider-labels">
-            <span>Simple</span>
-            <span id="label-pv" style="color:var(--lot-pv);font-weight:700">×1.0</span>
-            <span>Complexe</span>
-          </div>
-          <div style="margin-top:8px;font-size:12px;color:var(--text-muted)" id="hint-pv">
-            Standard
-          </div>
-        </div>
+        {% endfor %}
 
       </div>
 
-      <!-- Prévisualisation ratio m² -->
-      <div style="margin-top:20px;padding:12px 16px;background:var(--bg-base);border-radius:6px;
+      <!-- Estimation prévisionnelle par lot -->
+      <div id="preview-card" style="margin-top:20px;padding:14px 16px;background:var(--bg-base);border-radius:6px;
                   border:1px solid var(--border)">
         <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;
-                    letter-spacing:.05em;margin-bottom:6px">Estimation prévisionnelle CFO/CFA/PV</div>
-        <div id="preview-m2" style="font-size:18px;font-weight:700;color:var(--accent)">—</div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
-          Basée sur la base de prix mise à jour le {{ maj_date_bdd or '—' }}
+                    letter-spacing:.05em;margin-bottom:10px">Calcul sommaire du budget sur la base de ratios</div>
+        <div class="preview-lot-rows" style="display:flex;flex-direction:column;gap:6px">
+          <div class="preview-lot-row" style="display:flex;justify-content:space-between;align-items:baseline">
+            <span style="font-size:12px;color:var(--lot-cfo);font-weight:600">CFO</span>
+            <span id="preview-cfo" style="font-size:15px;font-weight:700;color:var(--text)">—</span>
+          </div>
+          <div class="preview-lot-row" style="display:flex;justify-content:space-between;align-items:baseline">
+            <span style="font-size:12px;color:var(--lot-cfa);font-weight:600">CFA</span>
+            <span id="preview-cfa" style="font-size:15px;font-weight:700;color:var(--text)">—</span>
+          </div>
+          <div class="preview-lot-row" style="display:flex;justify-content:space-between;align-items:baseline">
+            <span style="font-size:12px;color:var(--lot-pv);font-weight:600">PV</span>
+            <span id="preview-pv" style="font-size:15px;font-weight:700;color:var(--text)">—</span>
+          </div>
+          <div style="height:1px;background:var(--border);margin:4px 0"></div>
+          <div class="preview-lot-row" style="display:flex;justify-content:space-between;align-items:baseline">
+            <span style="font-size:12px;color:var(--text-muted);font-weight:700;text-transform:uppercase">Total</span>
+            <span id="preview-total" style="font-size:20px;font-weight:800;color:var(--accent-b,var(--accent2))">—</span>
+          </div>
+          <div class="preview-lot-row" style="display:flex;justify-content:space-between;align-items:baseline">
+            <span style="font-size:11px;color:var(--text-muted);font-weight:600">Ratio global</span>
+            <span id="preview-total-ratio" style="font-size:12px;font-weight:700;color:var(--text-muted)">—</span>
+          </div>
+        </div>
+        <div id="preview-hint" style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.4">
+          Base de prix (pu_ht_ref) : <span id="preview-ratio-detail">—</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
+          Basée sur la base de prix mise à jour le <span id="preview-maj-date">{{ maj_date_bdd or '—' }}</span>
         </div>
       </div>
 
@@ -250,56 +308,95 @@
   <div id="progress-label" style="font-size:12px;color:var(--text-muted)">0%</div>
 </div>
 
+<script src="{{ url_for('static', filename='js/complexity_scale.js') }}"></script>
+<script src="{{ url_for('static', filename='js/pv_system_scale.js') }}"></script>
 <script>
-// Ratios €/m² de référence (complexité 1.0) par lot, injectés depuis la BDD
-const RATIO_M2_BASE = {
-    cfo: {{ ratio_m2_cfo or 113.13 }},
-    cfa: {{ ratio_m2_cfa or 0 }},
-    pv:  {{ ratio_m2_pv  or 0 }},
-};
-
-// Paliers Egis — taux Phase indépendant
 const PHASE_PRESETS_NEW = { DIAG: 6, APS: 4, APD: 3, PRO: 1 };
+const EUR_FMT = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
+let _previewTimer = null;
+let _previewAbort = null;
 
 function applyPhasePreset(phase) {
     const preset = PHASE_PRESETS_NEW[phase] ?? 3;
     document.getElementById('input-taux-phase').value = preset;
-}
-
-function updateSliderLabel(lot, val) {
-    const v = parseFloat(val);
-    document.getElementById(`label-${lot}`).textContent = `×${v.toFixed(1)}`;
-
-    const hints = {
-        '0.7': 'Projet simple, faible équipement',
-        '0.8': 'Réhabilitation légère',
-        '0.9': 'Légèrement en dessous du standard',
-        '1.0': 'Complexité standard hospitalier',
-        '1.1': 'Équipements spécifiques',
-        '1.2': 'Blocs opératoires / Réa',
-        '1.3': 'Très haute technicité',
-        '1.4': 'Projet exceptionnel',
-        '1.5': 'Complexité maximale',
-    };
-    const key = v.toFixed(1);
-    document.getElementById(`hint-${lot}`).textContent = hints[key] || '';
-
     updatePreview();
 }
 
-function updatePreview() {
-    const sdo   = parseFloat(document.querySelector('[name=surface_sdo]').value) || 1000;
-    const ccfo  = parseFloat(document.querySelector('[name=coef_complexity_cfo]').value) || 1.0;
-    const ccfa  = parseFloat(document.querySelector('[name=coef_complexity_cfa]').value) || 1.0;
-    const cpv   = parseFloat(document.querySelector('[name=coef_complexity_pv]').value)  || 1.0;
-    const total = (RATIO_M2_BASE.cfo * ccfo + RATIO_M2_BASE.cfa * ccfa + RATIO_M2_BASE.pv * cpv) * sdo;
-    document.getElementById('preview-m2').textContent =
-        new Intl.NumberFormat('fr-FR', {style:'currency',currency:'EUR',maximumFractionDigits:0}).format(total);
+function _previewParams() {
+    const cat = document.getElementById('select-category');
+    return new URLSearchParams({
+        surface_sdo: document.querySelector('[name=surface_sdo]').value || '1000',
+        category_id: cat && cat.value ? cat.value : '',
+        taux_phase: document.getElementById('input-taux-phase').value || '3',
+        taux_incertitude: document.getElementById('input-incertitude').value || '3',
+        coef_risque: document.getElementById('input-risque').value || '1',
+        coef_complexity_cfo: document.querySelector('[name=coef_complexity_cfo]').value || '1',
+        coef_complexity_cfa: document.querySelector('[name=coef_complexity_cfa]').value || '1',
+        ratio_global_cfo_m2: document.querySelector('[name=ratio_global_cfo_m2]').value || '',
+        ratio_global_cfa_m2: document.querySelector('[name=ratio_global_cfa_m2]').value || '',
+        ratio_global_pv_kwc: document.querySelector('[name=ratio_global_pv_kwc]').value || '',
+        puissance_pv_kwc: document.getElementById('input-pv-kwc').value || '100',
+        pv_system_type: document.querySelector('[name=pv_system_type]').value || 'toiture',
+    });
 }
 
-function updateDensityPreview(val) { updatePreview(); }
+function updatePreview() {
+    clearTimeout(_previewTimer);
+    _previewTimer = setTimeout(_fetchPreview, 280);
+}
 
-updatePreview();
+async function _fetchPreview() {
+    if (_previewAbort) _previewAbort.abort();
+    _previewAbort = new AbortController();
+    const qs = _previewParams().toString();
+    try {
+        const res = await fetch(`{{ url_for('api_affaire_preview_estimation') }}?${qs}`, {
+            signal: _previewAbort.signal,
+        });
+        const data = await res.json();
+        if (!data.ok) return;
+        document.getElementById('preview-cfo').textContent = EUR_FMT.format(data.prix_cfo);
+        document.getElementById('preview-cfa').textContent = EUR_FMT.format(data.prix_cfa);
+        document.getElementById('preview-pv').textContent = EUR_FMT.format(data.prix_pv);
+        document.getElementById('preview-total').textContent = EUR_FMT.format(data.prix_total);
+        const sdo = parseFloat(document.querySelector('[name=surface_sdo]').value || '0');
+        const totalRatioEl = document.getElementById('preview-total-ratio');
+        if (totalRatioEl) {
+            totalRatioEl.textContent = sdo > 0
+                ? `${Math.round(data.prix_total / sdo).toLocaleString('fr-FR')} €/m²`
+                : '—';
+        }
+        if (data.maj_date_bdd) {
+            document.getElementById('preview-maj-date').textContent = data.maj_date_bdd;
+        }
+        const ratioEl = document.getElementById('preview-ratio-detail');
+        if (ratioEl) {
+            const rCfo = data.ratio_m2_cfo != null ? Math.round(data.ratio_m2_cfo) : '—';
+            const rCfa = data.ratio_m2_cfa != null ? Math.round(data.ratio_m2_cfa) : '—';
+            const rPv = data.ratio_kwc_pv != null ? data.ratio_kwc_pv : '—';
+            ratioEl.textContent =
+                `CFO ${rCfo} €/m² · CFA ${rCfa} €/m² · PV ${rPv} €/kWc`;
+        }
+    } catch (e) {
+        if (e.name !== 'AbortError') console.warn('preview', e);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    initAffaireNewComplexitySliders();
+    initAffaireNewPvSystemSlider();
+    ['cfo', 'cfa'].forEach(lot => {
+        const slider = document.querySelector(`[data-cplx-slider="${lot}"]`);
+        if (slider) slider.addEventListener('input', updatePreview);
+    });
+    document.querySelectorAll('.preview-input').forEach(el => {
+        el.addEventListener('input', updatePreview);
+        el.addEventListener('change', updatePreview);
+    });
+    const cat = document.getElementById('select-category');
+    if (cat) cat.addEventListener('change', updatePreview);
+    updatePreview();
+});
 
 // Overlay de progression au submit
 document.querySelector('form').addEventListener('submit', function() {

@@ -1,54 +1,61 @@
 @echo off
 REM ============================================================
 REM  Lancer_Estimateur_DEBUG.bat
-REM  Version DEBUG : lance l'app AVEC fenetre console visible,
-REM  pour diagnostiquer les erreurs en cas de probleme.
-REM  Utilise Python embeddable local (./python/python.exe).
+REM  Flask dans CETTE fenetre (toutes les traces / stack traces).
+REM  Meme detection Python que Lancer_Estimateur.bat.
+REM
+REM  ESTIMATION_DEBUG_LOG : chemin NDJSON pour sessions debug Cursor
 REM ============================================================
+setlocal
+title Estimation Elec — DEBUG
 
-title Estimation Elec - DEBUG
+cd /d "%~dp0"
+
+set "ESTIMATION_DEBUG_LOG=%~dp0debug-b2b456.log"
 
 echo.
 echo  ============================================
 echo   Estimation Elec  ^|  MODE DEBUG
-echo   (fenetre console visible - logs en direct)
+echo   Flask dans cette fenetre ^(app.py debug=True^)
+echo   ESTIMATION_DEBUG_LOG=%ESTIMATION_DEBUG_LOG%
 echo  ============================================
 echo.
 
-REM --- Aller dans le dossier du script ---------------------------
-cd /d "%~dp0"
+if not exist "logs"     mkdir logs
+if not exist "exports"  mkdir exports
+if not exist "uploads"  mkdir uploads
 
-REM --- Verification Python (systeme ou embeddable) ---------------
+set "PYTHON_EXE="
 if exist ".\python\python.exe" (
-    set PYTHON=.\python\python.exe
+    set "PYTHON_EXE=.\python\python.exe"
+    echo [OK] Python embeddable : .\python\
 ) else (
-    set PYTHON=python
+    where python >nul 2>&1
+    if not errorlevel 1 (
+        set "PYTHON_EXE=python"
+        echo [OK] Python systeme detecte
+    ) else (
+        echo [ERREUR] Aucun Python trouve.
+        pause & exit /b 1
+    )
 )
 
-REM --- Creation dossiers manquants -------------------------------
-if not exist "logs"    mkdir logs
-if not exist "exports" mkdir exports
-if not exist "uploads" mkdir uploads
-
-REM --- Verifier si le port 5000 est deja occupe ------------------
-netstat -ano 2>nul | findstr ":5000 " | findstr "LISTENING" >nul 2>&1
-if %errorlevel% equ 0 (
-    echo [INFO] Port 5000 deja occupe - serveur probablement deja actif
-    echo Ouverture du navigateur...
-    start "" http://localhost:5000
+netstat -ano 2>nul | findstr /C:":5000 " | findstr /C:"LISTENING" >nul 2>&1
+if not errorlevel 1 (
+    echo [INFO] Port 5000 deja en ecoute.
+    start "" http://localhost:5000/matching
     pause
     exit /b 0
 )
 
-REM --- Ouverture du navigateur dans 3 secondes ------------------
-start "" cmd /c "timeout /t 3 /nobreak >nul & start http://localhost:5000"
+REM Navigateur ~6 s apres le lancement (laisse Flask demarrer)
+start "" cmd /c "timeout /t 6 /nobreak >nul & start http://localhost:5000/matching"
 
-REM --- Lancement du serveur Flask (console visible) --------------
-echo [OK] Lancement de Flask... (Ctrl+C pour arreter)
+echo [OK] Demarrage Flask ici — Ctrl+C pour arreter.
+echo     Navigateur /matching vers 6 s si le serveur est pret.
 echo.
-%PYTHON% app.py
+"%PYTHON_EXE%" app.py
 
-REM --- Si on arrive ici, le serveur s'est arrete -----------------
 echo.
 echo [INFO] Serveur arrete.
 pause

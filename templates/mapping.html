@@ -1,15 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Mapping — {{ project.name }}{% endblock %}
+{% block page_subtitle %}Mapping manuel{% endblock %}
 
-{% block topbar %}
-<div class="topbar">
-  <div style="display:flex;align-items:center;gap:12px">
-    <a href="{{ url_for('import_page') }}" style="color:var(--text-muted);font-size:13px">← Import</a>
-    <span style="color:var(--border)">|</span>
-    <span class="topbar-title">Mapping manuel</span>
-    <span class="topbar-sub">{{ project.name }}</span>
-  </div>
-  <div class="topbar-actions" style="display:flex;gap:8px;align-items:center">
+{% block header_actions %}
+<a class="h-home" href="{{ url_for('import_page') }}">← Import</a>
+{% endblock %}
+
+{% block header_bar %}
+<div class="header-toolbar">
+  <div class="header-toolbar-stats" style="display:flex;gap:8px;align-items:center">
     <span id="stat-auto"     style="font-size:12px;color:var(--green)">auto: 0</span>
     <span id="stat-manual"   style="font-size:12px;color:var(--accent2)">manuel: 0</span>
     <span id="stat-pending"  style="font-size:12px;color:var(--orange)">à traiter: 0</span>
@@ -19,7 +18,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="content">
+<div class="page-panel">
 
   {% if not lines %}
   <div class="empty-state">

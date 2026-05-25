@@ -1,7 +1,110 @@
 # CURRENT_STATE.md — Estimation Élec
-**Mise à jour : 2026-05-03 | Sprint 9.4 — Page Estimation d'affaire + migration hors catalogue**
+**Mise à jour : 2026-05-25 | État sauvegardé — fiche, estimation, bibliothèque, architecture**
 
 > Sous Windows (FS insensible à la casse), un fichier `current_state.md` distinct à la racine **n’est pas possible** : utiliser uniquement ce fichier `CURRENT_STATE.md`.
+
+---
+
+## Session 2026-05-25 — État sauvegardé GitHub (validé Eric)
+
+**Objectif** : figer l'état fonctionnel validé pour éviter qu'une évolution future casse la fiche affaire, la page estimation ou la bibliothèque.
+
+### Synthèse fonctionnelle validée
+
+| Zone | Statut | Points validés / corrigés |
+|---|---:|---|
+| **Fiche affaire** `/affaire/new`, `/affaire/<id>/edit` | ✅ | Ratios globaux CFO/CFA/PV éditables, persistés dans `affaires`, repris à la réouverture, preview recalculée ; ratio global Total €/m² affiché sous le total. |
+| **Dashboard** `/` | ✅ | Bouton `Fiche` sur chaque carte affaire vers `/affaire/<id>/edit`, bouton `Estimer` conservé vers `/affaire/<id>/estimation`. |
+| **Page Estimation** `/affaire/<id>/estimation` | ✅ | Suppression du bouton `+ Ligne hors catalogue`; header enrichi avec phase, taux phase, incertitude et risque auto-sauvegardés; total sous-chapitre = macro ratio si aucun article chiffré, sinon somme des articles. |
+| **Layout Estimation** | ✅ | Ajout/renommage section stabilisés; insertion sous le sous-chapitre cliqué; plus de doublon DOM après renommage; ordre section complet transmis au JS. |
+| **Promotion biblio** | ✅ | Section/article locaux promus vers `dpgf_articles`; la section promue conserve sa position dans la bibliothèque via `row_order` (insertion au bon endroit). |
+| **Bibliothèque DPGF** `/bibliotheque` | ✅ | Boutons ▲/▼ sur les sous-chapitres pour déplacer une section complète avec ses articles; persistance via `row_order`; suppression section toujours transactionnelle. |
+
+### Règles anti-régression ajoutées
+
+- **Fiche affaire** : les ratios globaux `ratio_global_cfo_m2`, `ratio_global_cfa_m2`, `ratio_global_pv_kwc` ne servent qu'à la preview de fiche, pas à resynchroniser une affaire snapshot.
+- **Page Estimation snapshot** : ne pas relancer `/api/ratios` sur une affaire initialisée; les PU restent figés dans `affaire_lines.ratio_ref`.
+- **Sous-chapitre macro** : utiliser le total macro `ratio_m2_override × qty` seulement si aucun article de la section n'a un total positif; dès qu'un article est chiffré, le sous-total affiché et les KPI utilisent la somme articles.
+- **Promotion section** : lors de `promote_section`, calculer `row_order` depuis `affaire_estimation_section_sort` et décaler les articles suivants du chapitre.
+- **Bibliothèque** : déplacer une section revient à réécrire les `row_order` de tous les articles visibles du chapitre; `localData` reste mutable (`let`).
+- **Suppression section bibliothèque** : conserver `delete_bibliotheque_section()` et son ordre FK-safe; ne pas supprimer physiquement les articles PSA, utiliser `is_hidden=1`.
+
+### Tests de garde-fou
+
+- `tests/test_affaire_preview_ratios.py` : ratios globaux fiche, persistance création/édition et réouverture.
+- `tests/test_estimation_snapshot.py` : snapshot création, PU figés, fallback `compute_ratios`, bascule macro/detail sur total article.
+- `tests/test_estimation_promote.py` : promotion section/article, refus doublon, ordre bibliothèque après promotion.
+- `tests/test_bibliotheque_section_move.py` : déplacement d'un sous-chapitre bibliothèque et persistance `row_order`.
+
+### Fichiers principaux modifiés / à surveiller
+
+- Backend : `app.py`, `models.py`, `estimation_layout.py`, `estimation_promote.py`.
+- Frontend : `templates/affaire_new.html`, `templates/affaire_estimation.html`, `templates/index.html`, `static/js/affaire_estimation.js`, `static/js/bibliotheque.js`, `static/css/style.css`.
+- Tests : `tests/test_affaire_preview_ratios.py`, `tests/test_bibliotheque_section_move.py`, `tests/test_estimation_snapshot.py`, `tests/test_estimation_promote.py`.
+
+**À poursuivre** : export Excel de la page Estimation (bouton encore placeholder) puis feedback visuel `saving…` pour les paramètres/sections.
+
+---
+
+## Session 2026-05-24 — Page Estimation `/affaire/<id>/estimation` (validé Eric)
+
+**Contexte** : évolution majeure de la page estimation (distincte de la fiche affaire « calculatrice »).
+
+| Lot | Statut | Détail |
+|-----|--------|--------|
+| **Snapshot création** | ✅ | `initialize_estimation_snapshot()` au `POST /affaire/new` ; PU figés dans `ratio_ref` ; si `pu_ht_ref` NULL → `compute_ratios()` comme biblio |
+| **Macro section** | ✅ | Ligne sous-chapitre : qté = SDO/kWc, PU = ratio €/m² ; total macro ; bascule si qty articles > 0 |
+| **Layout affaire** | ✅ | `+`, `§+`, ▲/▼, suppression sections locales ; `estimation_layout.py` + API `estimation/layout` |
+| **Nouvelle section** | ✅ | Insérée sous le sous-chapitre courant ; macro ratio éditable ; 1 article vide ; pas de création hors catalogue |
+| **Désignations** | ✅ | Tous articles éditables (style `estim-desig-edit`) ; override `affaire_lines.line_designation` |
+| **Promotion biblio** | ✅ | 📖 section / article → `estimation_promote.py` ; tests `test_estimation_promote.py` |
+| **Header** | ✅ | Lien Calculateur retiré de `affaire_estimation.html` |
+
+**Fichiers** : `models.py`, `estimation_layout.py`, `estimation_promote.py`, `app.py`, `affaire_estimation.js`, `style.css`, `tests/test_estimation_snapshot.py`, `tests/test_estimation_promote.py`.
+
+**Prochain** : Sprint 5 — ratios globaux CFO/CFA/PV éditables sur fiche affaire (`affaire_new.html`).
+
+**Test** : toujours **nouvelle affaire** après changement BDD ; affaires pré-snapshot = comportement legacy.
+
+---
+
+## Session 2026-05-23 — Fiche affaire `/affaire/new` (validé Eric)
+
+**Contexte** : page création / édition affaire ; estimation prévisionnelle CFO/CFA/PV avant ouverture du calculateur.
+
+| Élément | Détail |
+|---|---|
+| **PV — type de système** | Slider **3 crans** (comme CFO/CFA mais paliers dédiés) : Toiture ×1,00 / IB ×1,30 / Ombrière ×1,55 → `affaires.pv_system_type` |
+| **PV — complexité** | `coef_complexity_pv` **fixé à 1,0** à la création/édition fiche (le slider « Coque–Prestige » ne s’applique plus au lot PV sur cette page) |
+| **Estimation prévisionnelle** | Carte **4 lignes** : Prix CFO, CFA, PV, **Total** = somme des trois |
+| **Source des ratios** | **`scripts/engine_bibliotheque_ratios.py`** — aligné sur la **Bibliothèque DPGF** (`pu_ht_ref`, ratios section manuels), **pas** `compute_ratios()` (devis importés) |
+| **Formule prix lot** | `Base biblio × complexité (CFO/CFA) × (1+phase%) × (1+incertitude%) × (1+risque%)` ; PV : `× coef système` en plus |
+| **Ratios affichés** | CFO/CFA en **€/m²** (ex. ~572 / ~211 pour SDO 1000) ; PV en **€/kWc** (ex. ~0,95) — diviseur = `puissance_pv_kwc` |
+| **API** | `GET /api/affaire/preview_estimation` — recalcul debounce ~280 ms depuis `affaire_new.html` |
+| **Champs fiche** | `puissance_pv_kwc` (kWc, diviseur PV) distinct de `kva_cible` (TGBT kVA, référence future) |
+
+**Fichiers** : `app.py`, `models.py` (`PV_SYSTEM_TYPES`, migration `pv_system_type`), `scripts/engine_bibliotheque_ratios.py`, `static/js/pv_system_scale.js`, `static/js/complexity_scale.js` (init sliders CFO/CFA seulement), `templates/affaire_new.html`.
+
+**Note métier validée** : si phase / incertitude / risque sont à **1 %** chacun, le multiplicateur provisions ≈ **1,0303** (+3,03 %) — les montants affichés sont donc supérieurs au simple « ratio × surface » affiché en bas de carte (base hors provisions).
+
+---
+
+## Session 2026-05-12 — Revue Matching (`/matching`)
+
+**Contexte** : page cockpit après import devis ; pas le calculateur affaire.
+
+| Élément | Détail |
+|---|---|
+| **BDD** | `devis_lines.weighted_price_override` (migration dans `ensure_app_tables`) — PU pondéré saisi manuellement |
+| **API** | `POST /api/matching/line/<id>/weighted_price` ; réponses `select` / `create_article` incluent `base_chapter`, `base_section` (DPGF) |
+| **`matching_data`** | Jointure `dpgf_articles` : expose `base_chapter`, `base_section` pour chaque ligne |
+| **`candidates`** | Jointure si ligne mappée : `base_chapter` / `base_section` référentiel ; fil modal = DPGF, pas `context_path` devis |
+| **Modal** | 1er candidat si ligne non mappée (évite `— \| — \| —`) ; ligne « nettoyé » si `cleaned_designation` non vide |
+| **Grille** | Désignation devis + base : texte intégral, `pre-wrap` (sauts de ligne) ; `title` sur sélecteur base |
+| **`engine_matching.py`** | Tokens avec élisions (`d'un`, `l'armoire`) ; apostrophe U+2019 → `'` dans `_sanitize_text` |
+| **Tests** | `tests/test_engine_matching_clean.py`, `tests/test_matching_api.py` (override PU) |
+
+Fichiers : `app.py`, `models.py`, `engine_matching.py`, `static/js/matching.js`, `templates/matching_view.html`, `schema.sql`.
 
 ---
 
@@ -24,7 +127,10 @@
 **Sprint 8** : ✅ Livré — Corrections QC Eric (5 rounds de retours)
 **Sprint 9 (bibliothèque)** : ✅ **Jalon 2026-05-02** — Page Bibliothèque DPGF validée fonctionnellement
 **Sprint 9.4 (estimation affaire)** : ✅ **2026-05-03** — `/affaire/<id>/estimation`, double calque, AJAX, lignes `dpgf_article_id` NULL
-**Prochain** : Export Excel depuis la page Estimation (placeholder) ; validation Eric si ajustement migration BDD
+**Revue Matching (import)** : ✅ **2026-05-12** — cockpit `/matching`, PU calculé éditable, modal DPGF, désignations multilignes, nettoyage apostrophe
+**Fiche affaire — preview bibliothèque** : ✅ **2026-05-23** — slider PV 3 crans, estimation CFO/CFA/PV sur `pu_ht_ref`, API `preview_estimation`
+**Page Estimation — snapshot + layout** : ✅ **2026-05-24** — gel PU, sections/articles affaire, promotion biblio, désignations éditables
+**Prochain** : **Sprint 5** ratios globaux CFO/CFA/PV sur fiche ; puis Export Excel estimation
 
 ---
 
@@ -35,7 +141,8 @@
 | Serveur Flask | Opérationnel (`Lancer_Estimateur.bat`) |
 | Base SQLite | **v8** (colonne `total_estime_ht` ajoutée par migration auto) |
 | Bibliothèque DPGF | ✅ **Validée 2026-05-02** — scroll, édition, suppression section, `DB_ARCHITECTURE.md` |
-| Estimation affaire | ✅ **2026-05-03** — snapshot catalogue + lignes persistantes, KPI CFO/CFA/PV, API `estimation/save` |
+| Estimation affaire | ✅ **2026-05-24** — snapshot à création, layout/promote, désignations override, KPI, API `estimation/save` + `layout` + `promote` |
+| Revue Matching | ✅ **2026-05-12** — `matching.js` / `matching_view.html`, API `weighted_price`, `engine_matching` |
 | Référentiel DPGF | 285 lignes PSA (3 chapitres / 44 sections / 285 articles) |
 | Types de bâtiments | 15 types (migration FK-safe : PRAGMA foreign_keys OFF/ON) |
 | Lot detection | Case-insensitive via `| lower` Jinja2 (CFO/CFA/PV corrects) |
@@ -47,6 +154,9 @@
 | Type bâtiment | Sélecteur dans la barre provisions (même ligne SDO/KVA/Phase) |
 | Retour fiche affaire | Lien "✏️ Modifier la fiche" depuis le calculateur |
 | Édition affaire | Route `/affaire/<id>/edit` (GET/POST) avec `affaire_new.html` |
+| Fiche affaire — preview | ✅ **2026-05-23** — `engine_bibliotheque_ratios`, API `/api/affaire/preview_estimation`, slider PV |
+| `affaires.pv_system_type` | Migration auto : `toiture` \| `ib` \| `ombriere` (défaut `toiture`) |
+| `affaires.puissance_pv_kwc` | kWc — diviseur ratios chapitre Photovoltaïque (défaut 100) |
 
 ---
 
@@ -119,7 +229,8 @@ affaires (
     id, name, client, adresse, date_creation, surface_sdo,
     category_id, coef_complexity_cfo, coef_complexity_cfa, coef_complexity_pv,
     coef_risque, taux_marge, statut, notes, created_at, updated_at,
-    kva_cible, phase_etude, taux_incertitude, taux_phase,
+    kva_cible, puissance_pv_kwc, pv_system_type,  -- PV : kWc + type toiture/IB/ombrière
+    phase_etude, taux_incertitude, taux_phase,
     total_estime_ht          -- Sprint 8 : total effectif (ratio fallback inclus)
 )
 affaire_lines (
@@ -191,10 +302,11 @@ ratio_overrides (id, dpgf_article_id, pu_override, raison, created_at)
 | Route | Méthode | Description |
 |---|---|---|
 | `/` | GET | Dashboard — liste affaires |
-| `/affaire/new` | GET/POST | Créer affaire + injecter 285 lignes |
+| `/affaire/new` | GET/POST | Créer affaire → redirection `/affaire/<id>/estimation` |
+| `/affaire/<id>/edit` | GET/POST | Fiche affaire (preview CFO/CFA/PV, slider PV) |
+| `/api/affaire/preview_estimation` | GET | **2026-05-23** — Preview bibliothèque (pu_ht_ref) |
 | `/affaire/<id>` | GET | Calculateur DPGF |
 | `/affaire/<id>/estimation` | GET | **Sprint 9.4** — Saisie estimation (double calque) |
-| `/affaire/<id>/edit` | GET/POST | **Sprint 8** — Édition fiche affaire |
 | `/api/affaire/<id>/save` | POST | Sauvegarder lignes + total_estime |
 | `/api/affaire/<id>/estimation/save` | POST | **Sprint 9.4** — Sauvegarde incrémentale page Estimation |
 | `/api/affaire/<id>/params` | POST | Auto-save paramètres (10 champs dont category_id) |

@@ -205,6 +205,64 @@ class TestMatchingApi(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_weighted_price_override_save_and_clear(self):
+        import models
+
+        conn = models.get_db()
+        row = conn.execute(
+            """
+            SELECT dl.id
+            FROM devis_lines dl
+            WHERE dl.dpgf_article_id IS NOT NULL
+              AND dl.mapping_status != 'excluded'
+              AND dl.unit_price_ht IS NOT NULL
+              AND dl.unit_price_ht > 0
+            LIMIT 1
+            """
+        ).fetchone()
+        conn.close()
+        if not row:
+            self.skipTest("Aucune ligne devis mappée avec PU devis")
+        line_id = int(row["id"])
+        client = self.app.test_client()
+        r = client.post(
+            f"/api/matching/line/{line_id}/weighted_price",
+            json={"weighted_price": 123.45},
+        )
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = r.get_json()
+        self.assertEqual(body.get("status"), "ok")
+        self.assertTrue(body.get("wp_manual"))
+        self.assertAlmostEqual(float(body.get("weighted_price")), 123.45, places=2)
+
+        conn = models.get_db()
+        try:
+            ov = conn.execute(
+                "SELECT weighted_price_override FROM devis_lines WHERE id=?",
+                (line_id,),
+            ).fetchone()[0]
+            self.assertAlmostEqual(float(ov), 123.45, places=2)
+        finally:
+            conn.execute(
+                "UPDATE devis_lines SET weighted_price_override=NULL WHERE id=?",
+                (line_id,),
+            )
+            conn.commit()
+            conn.close()
+
+        r2 = client.post(
+            f"/api/matching/line/{line_id}/weighted_price",
+            json={"weighted_price": None},
+        )
+        self.assertEqual(r2.status_code, 200)
+        conn = models.get_db()
+        ov2 = conn.execute(
+            "SELECT weighted_price_override FROM devis_lines WHERE id=?",
+            (line_id,),
+        ).fetchone()[0]
+        conn.close()
+        self.assertIsNone(ov2)
+
 
 if __name__ == "__main__":
     unittest.main()

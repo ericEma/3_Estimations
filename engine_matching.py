@@ -59,7 +59,11 @@ STOP_WORDS = {
 # Supprime les caractères invisibles qui cassent l'affichage / la comparaison
 _INVISIBLE_RE = re.compile(r"[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]")
 
-_TOKEN_RE = re.compile(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]+", re.UNICODE)
+# Mots avec élision française : d'un, l'armoire, jusqu'à (apostrophe à l'intérieur du mot)
+_TOKEN_RE = re.compile(
+    r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]+(?:'[0-9A-Za-zÀ-ÖØ-öø-ÿ]+)*",
+    re.UNICODE,
+)
 
 
 def _sanitize_text(text: str) -> str:
@@ -67,6 +71,8 @@ def _sanitize_text(text: str) -> str:
         return ""
     t = unicodedata.normalize("NFKC", text)
     t = _INVISIBLE_RE.sub("", t)
+    # Apostrophe typographique → ASCII (tokenisation des mots élidés : d'un, l'armoire)
+    t = t.replace("\u2019", "'")
     t = re.sub(r"\s{2,}", " ", t)
     return t.strip()
 
@@ -151,6 +157,69 @@ def normalize_with_synonyms(conn: sqlite3.Connection, text: str) -> str:
         pattern = re.compile(re.escape(original), re.IGNORECASE)
         result = pattern.sub(mapped, result)
     return result
+
+
+# ─── Résolution section devis → section DPGF ─────────────────────────────────
+
+def resolve_dpgf_section(
+    conn: sqlite3.Connection,
+    lot: str,
+    raw_section: str,
+    threshold: int = 40,
+) -> Optional[str]:
+    """
+    Trouve la section DPGF la plus proche du nom de section issu du devis.
+
+    Utile quand le devis entreprise utilise des intitulés différents du modèle PSA.
+    Ordre : égalité (casse) ; sous-chaîne (ex. « Distribution » dans un titre long) ;
+    puis WRatio ; en secours partial_ratio si libellés très asymétriques.
+    """
+    if not raw_section or not raw_section.strip():
+        return None
+    lot = (lot or "CFO").upper()
+    raw_lower = raw_section.strip().lower()
+
+    rows = conn.execute(
+        """SELECT DISTINCT section FROM dpgf_articles
+           WHERE lot = ? AND row_type = 'article'
+             AND section IS NOT NULL AND section != ''
+             AND (is_hidden IS NULL OR is_hidden = 0)""",
+        (lot,),
+    ).fetchall()
+    sections = [r[0] for r in rows if r[0] and r[0].strip()]
+    if not sections:
+        return None
+
+    for s in sections:
+        if s.strip().lower() == raw_lower:
+            return s
+
+    # Libellé devis court contenu dans un intitulé DPGF long
+    # (ex. "Distribution" ⊂ "Tableau divisionnaire de distribution …")
+    contains = [s for s in sections if raw_lower and raw_lower in s.strip().lower()]
+    if len(contains) == 1:
+        return contains[0]
+    if len(contains) > 1 and _RAPIDFUZZ_OK:
+        sub = rfprocess.extractOne(
+            raw_section,
+            contains,
+            scorer=fuzz.WRatio,
+            score_cutoff=max(30, threshold - 10),
+        )
+        if sub:
+            return sub[0]
+
+    if not _RAPIDFUZZ_OK:
+        return None
+    result = rfprocess.extractOne(
+        raw_section, sections, scorer=fuzz.WRatio, score_cutoff=threshold
+    )
+    if result:
+        return result[0]
+    pr = rfprocess.extractOne(
+        raw_section, sections, scorer=fuzz.partial_ratio, score_cutoff=max(55, threshold)
+    )
+    return pr[0] if pr else None
 
 
 # ─── Matching principal ───────────────────────────────────────────────────────
@@ -331,6 +400,15 @@ def find_best_match(
         a for a in articles
         if ds_lower and (a.get('section') or '').strip().lower() == ds_lower
     ]
+    dsec_resolved = dsec
+    if dsec and not articles_same_section:
+        resolved = resolve_dpgf_section(conn, lot, dsec)
+        if resolved:
+            dsec_resolved = resolved
+            articles_same_section = [
+                a for a in articles
+                if (a.get('section') or '').strip().lower() == resolved.strip().lower()
+            ]
     choices_sec = {a['id']: a['designation'] for a in articles_same_section}
 
     # Même sous-chapitre d'abord (extract dédié), puis lot élargi pour compléter le pool
@@ -377,7 +455,7 @@ def find_best_match(
                 art_by_id[aid].get('chapter'),
                 art_by_id[aid].get('section'),
                 dch,
-                dsec,
+                dsec_resolved,
             ),
             -boosted_scores.get(aid, pool_scores[aid]),
         ),

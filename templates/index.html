@@ -1,55 +1,50 @@
 {% extends "base.html" %}
 
-{% block title %}Affaires{% endblock %}
-
-{% block topbar %}
-<div class="topbar">
-  <div>
-    <span class="topbar-title">Mes Affaires</span>
-    <span class="topbar-sub">{{ affaires|length }} affaire{% if affaires|length != 1 %}s{% endif %}</span>
-  </div>
-  <div class="topbar-actions">
-    <a href="{{ url_for('affaire_new') }}" class="btn btn-primary">
-      ➕ Nouvelle affaire
-    </a>
-  </div>
-</div>
-{% endblock %}
+{% block title %}Accueil{% endblock %}
+{% block page_subtitle %}Mes affaires{% endblock %}
 
 {% block content %}
-<div class="content">
+<div class="page-panel">
+  <div class="dash-head">
+    <div>
+      <h1 class="page-panel-title">Mes affaires</h1>
+      <p class="page-panel-desc">{{ affaires|length }} affaire{% if affaires|length != 1 %}s{% endif %}</p>
+    </div>
+  </div>
 
   {% if affaires %}
-  <div class="affaires-grid">
+  <div class="affaires-grid affaires-grid-explorer">
     {% for a in affaires %}
-    <div class="affaire-card" onclick="location.href='{{ url_for('affaire_estimation', affaire_id=a.id) }}'">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+    <div class="affaire-card affaire-card-explorer" onclick="location.href='{{ url_for('affaire_estimation', affaire_id=a.id) }}'">
+      <div class="affaire-card-top">
         <span class="status-badge status-{{ a.statut }}">{{ a.statut|title }}</span>
-        <div style="display:flex;gap:6px;align-items:center" onclick="event.stopPropagation()">
+        <div class="affaire-card-actions" onclick="event.stopPropagation()">
+          <a href="{{ url_for('affaire_edit', affaire_id=a.id) }}"
+             class="btn btn-sm btn-outlined" title="Ouvrir la fiche affaire">Fiche</a>
           <a href="{{ url_for('affaire_estimation', affaire_id=a.id) }}"
-             class="btn btn-sm btn-estimer" title="Ouvrir l'estimation (chiffrage)">📊 Estimer</a>
+             class="btn btn-sm btn-outlined" title="Ouvrir l'estimation">Estimer</a>
           <button type="button" class="btn btn-sm btn-danger"
                   data-affaire-id="{{ a.id }}"
                   data-affaire-name="{{ a.name | e }}"
                   onclick="event.stopPropagation(); deleteAffaireFromBtn(this)"
-                  style="opacity:.5" title="Supprimer">✕</button>
+                  title="Supprimer">✕</button>
         </div>
       </div>
 
       <div class="affaire-card-title">{{ a.name }}</div>
 
       <div class="affaire-card-meta">
-        {% if a.client %}<span>📋 {{ a.client }}</span>{% endif %}
-        <span>📐 {{ a.surface_sdo|int }} m²</span>
-        {% if a.category_name %}<span>🏥 {{ a.category_name }}</span>{% endif %}
-        <span>📅 {{ a.date_creation }}</span>
+        {% if a.client %}<span>{{ a.client }}</span>{% endif %}
+        <span>{{ a.surface_sdo|int }} m²</span>
+        {% if a.category_name %}<span>{{ a.category_name }}</span>{% endif %}
+        <span>{{ a.date_creation }}</span>
       </div>
 
       <div class="affaire-card-total">
         {% if a.total_ht and a.total_ht > 0 %}
           {{ a.total_ht | eur }}
         {% else %}
-          <span style="color:var(--text-muted);font-size:14px">Non calculé</span>
+          <span class="affaire-card-muted">Non calculé</span>
         {% endif %}
       </div>
 
@@ -59,41 +54,34 @@
       </div>
       {% endif %}
 
-      <div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">
-        <span style="font-size:11px;color:var(--lot-cfo)">CFO ×{{ a.coef_complexity_cfo }}</span>
-        <span style="font-size:11px;color:var(--lot-cfa)">CFA ×{{ a.coef_complexity_cfa }}</span>
+      <div class="affaire-card-lots">
+        <span class="lot-tag cfo">CFO ×{{ a.coef_complexity_cfo }}</span>
+        <span class="lot-tag cfa">CFA ×{{ a.coef_complexity_cfa }}</span>
         {% if a.coef_complexity_pv != 1.0 %}
-        <span style="font-size:11px;color:var(--lot-pv)">PV ×{{ a.coef_complexity_pv }}</span>
+        <span class="lot-tag pv">PV ×{{ a.coef_complexity_pv }}</span>
         {% endif %}
       </div>
     </div>
     {% endfor %}
 
-    <!-- Card "Nouvelle affaire" -->
-    <a href="{{ url_for('affaire_new') }}"
-       style="display:flex;flex-direction:column;align-items:center;justify-content:center;
-              border:2px dashed var(--border);border-radius:10px;padding:32px;
-              color:var(--text-muted);text-decoration:none;transition:all .15s"
-       onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
-       onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-muted)'">
-      <div style="font-size:32px;margin-bottom:8px">➕</div>
-      <div style="font-size:13px;font-weight:600">Nouvelle affaire</div>
+    <a href="{{ url_for('affaire_new') }}" class="affaire-card affaire-card-new">
+      <div class="affaire-card-new-icon">+</div>
+      <div class="affaire-card-new-label">Nouvelle estimation</div>
     </a>
   </div>
 
   {% else %}
-  <div class="empty-state">
+  <div class="empty-state empty-state-explorer">
     <div class="empty-icon">⚡</div>
     <h3>Aucune affaire</h3>
-    <p>Créez votre première affaire pour commencer à chiffrer.</p>
+    <p>Créez votre première estimation pour commencer.</p>
     <div style="margin-top:20px">
-      <a href="{{ url_for('affaire_new') }}" class="btn btn-primary btn-lg">
-        ➕ Créer une affaire
+      <a href="{{ url_for('affaire_new') }}" class="btn btn-outlined btn-lg">
+        Nouvelle estimation
       </a>
     </div>
   </div>
   {% endif %}
-
 </div>
 
 <script>

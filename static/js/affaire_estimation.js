@@ -49,6 +49,11 @@ function secUiKey(chap, sec) {
   return `${chap}|||${sec}`;
 }
 
+function sortOrderValue(value, fallback = 999999) {
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 /** État inclusion chapitres (persisté ``affaire_chapter_settings``) — En charge du lot électricité */
 const chapterState = {};
 function defaultChapterRow(name) {
@@ -69,6 +74,7 @@ for (const s of (typeof INIT_CHAPTER_STATE !== 'undefined' && INIT_CHAPTER_STATE
     is_included: s.is_included !== false,
     use_macro: !!s.use_macro,
     qty: parseFloat(s.qty) || 1.0,
+    ratio_m2_override: null,
   };
 }
 
@@ -84,7 +90,28 @@ for (const s of (typeof INIT_SECTION_STATE !== 'undefined' && INIT_SECTION_STATE
     is_included: s.is_included !== false,
     use_macro: !!s.use_macro,
     qty: parseFloat(s.qty) || 1.0,
+    ratio_m2_override: s.ratio_m2_override != null ? parseFloat(s.ratio_m2_override) : null,
+    is_local: !!s.is_local,
+    sort_order: sortOrderValue(s.sort_order),
   };
+}
+
+const sectionSortOrder = {};
+for (const s of (typeof INIT_SECTION_STATE !== 'undefined' && INIT_SECTION_STATE) || []) {
+  if (s && s.chapter && s.section != null) {
+    sectionSortOrder[secUiKey(s.chapter, s.section)] = sortOrderValue(s.sort_order);
+  }
+}
+
+function sectionSortCompare(chap, secA, secB) {
+  const oa = sectionSortOrder[secUiKey(chap, secA)] ?? 999999;
+  const ob = sectionSortOrder[secUiKey(chap, secB)] ?? 999999;
+  if (oa !== ob) return oa - ob;
+  return String(secA).localeCompare(String(secB), 'fr');
+}
+
+function sortedSectionEntries(chap, treeChap) {
+  return Object.entries(treeChap || {}).sort((a, b) => sectionSortCompare(chap, a[0], b[0]));
 }
 
 function ensureSectionState(chap, sec) {
@@ -97,13 +124,211 @@ function ensureSectionState(chap, sec) {
       is_included: true,
       use_macro: false,
       qty: 1.0,
+      ratio_m2_override: null,
+      is_local: false,
+      sort_order: 999999,
     };
   }
   return sectionState[k];
 }
 
+function flushSavePromise() {
+  return new Promise(resolve => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    const waitDone = () => {
+      if (!saveInFlight && dirtyMap.size === 0) resolve();
+      else setTimeout(waitDone, 80);
+    };
+    if (dirtyMap.size === 0 && !saveInFlight) {
+      resolve();
+      return;
+    }
+    flushSave();
+    setTimeout(waitDone, 80);
+  });
+}
+
+async function callEstimationPromote(action, body) {
+  await flushSavePromise();
+  try {
+    const res = await fetch(`/api/affaire/${AFFAIRE_ID}/estimation/promote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, ...body }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      showFlash(data.message || 'Promotion refusée', true);
+      return null;
+    }
+    return data;
+  } catch (e) {
+    console.warn('promote', e);
+    showFlash('Erreur réseau (promotion)', true);
+    return null;
+  }
+}
+
+function promoteEstimationSection(chap, sec) {
+  if (!confirm(`Ajouter la section « ${sec} » à la base de prix ?\nElle sera disponible pour les prochaines affaires.`)) return;
+  callEstimationPromote('promote_section', { chapter: chap, section: sec }).then(data => {
+    if (data) {
+      showFlash(`Section ajoutée à la base de prix (${data.articles_promoted || 0} article(s))`);
+      window.location.reload();
+    }
+  });
+}
+
+function promoteEstimationArticle(lineId, label) {
+  const name = label || 'cet article';
+  if (!confirm(`Ajouter « ${name} » à la base de prix ?`)) return;
+  callEstimationPromote('promote_article', { line_id: lineId }).then(data => {
+    if (data) {
+      showFlash('Article ajouté à la base de prix');
+      window.location.reload();
+    }
+  });
+}
+
+async function callEstimationLayout(action, body) {
+  try {
+    const res = await fetch(`/api/affaire/${AFFAIRE_ID}/estimation/layout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, ...body }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      showFlash(data.message || 'Opération refusée', true);
+      return null;
+    }
+    if (data.totals) updateKpiStrip(data.totals);
+    if (data.section_sort) {
+      for (const s of data.section_sort) {
+        sectionSortOrder[secUiKey(s.chapter, s.section)] = sortOrderValue(s.sort_order);
+      }
+    }
+    return data;
+  } catch (e) {
+    console.warn('layout', e);
+    showFlash('Erreur réseau (layout)', true);
+    return null;
+  }
+}
+
+function addEstimationSection(chap, afterSec) {
+  callEstimationLayout('add_section', {
+    chapter: chap,
+    section_name: '',
+    after_section: afterSec || '',
+  }).then(data => {
+    if (data) {
+      const sec = data.section;
+      if (sec) {
+        expandedSecs.add(secUiKey(chap, sec));
+        expandedChaps.add(chap);
+      }
+      showFlash('Sous-chapitre ajouté');
+      window.location.reload();
+    }
+  });
+}
+
+function addEstimationArticle(chap, sec, afterDpgf, afterLine) {
+  const body = { chapter: chap, section: sec };
+  if (afterDpgf) body.after_dpgf_id = afterDpgf;
+  if (afterLine) body.after_line_id = afterLine;
+  callEstimationLayout('add_article', body).then(data => {
+    if (data) {
+      showFlash('Article ajouté');
+      window.location.reload();
+    }
+  });
+}
+
+function deleteEstimationSection(chap, sec) {
+  if (!confirm(`Supprimer la section « ${sec} » et ses lignes affaire ?`)) return;
+  callEstimationLayout('delete_section', { chapter: chap, section: sec }).then(data => {
+    if (data) {
+      showFlash('Section supprimée');
+      window.location.reload();
+    }
+  });
+}
+
+function moveEstimationSection(chap, sec, direction) {
+  callEstimationLayout('move_section', { chapter: chap, section: sec, direction }).then(data => {
+    if (data) window.location.reload();
+  });
+}
+
+function moveEstimationArticle(chap, sec, direction, dpgfId, lineId) {
+  const body = { chapter: chap, section: sec, direction };
+  if (dpgfId) body.dpgf_id = dpgfId;
+  if (lineId) body.line_id = lineId;
+  callEstimationLayout('move_article', body).then(data => {
+    if (data) window.location.reload();
+  });
+}
+
+function sectionActionButtons(chap, sec, secArts) {
+  const st = ensureSectionState(chap, sec);
+  const lastArt = secArts[secArts.length - 1];
+  const afterDpgf = lastArt && lastArt.dpgf_id ? lastArt.dpgf_id : null;
+  const afterLine = lastArt && lastArt.is_tree_custom ? lastArt.line_id : null;
+  const delBtn = st.is_local
+    ? `<button type="button" class="sec-del-btn" title="Supprimer ce sous-chapitre de l'affaire"
+         onclick="event.stopPropagation();window.__est.deleteSection('${escJ(chap)}','${escJ(sec)}')">
+         <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 4h10M6 4V3h4v1M5 4v8a1 1 0 001 1h4a1 1 0 001-1V4"/><path d="M7 7v4M9 7v4"/></svg>
+       </button>`
+    : '';
+  const promoteSecBtn = st.is_local
+    ? `<button type="button" class="estim-promote-btn" title="Ajouter cette section à la base de prix"
+         onclick="event.stopPropagation();window.__est.promoteSection('${escJ(chap)}','${escJ(sec)}')">📖</button>`
+    : '';
+  return `
+    <button type="button" class="estim-move-btn" title="Monter la section"
+      onclick="event.stopPropagation();window.__est.moveSection('${escJ(chap)}','${escJ(sec)}','up')">▲</button>
+    <button type="button" class="estim-move-btn" title="Descendre la section"
+      onclick="event.stopPropagation();window.__est.moveSection('${escJ(chap)}','${escJ(sec)}','down')">▼</button>
+    <button type="button" class="add-row-btn" title="Ajouter un article"
+      onclick="event.stopPropagation();window.__est.addArticle('${escJ(chap)}','${escJ(sec)}',${afterDpgf || 'null'},${afterLine || 'null'})">+</button>
+    <button type="button" class="add-sec-btn" title="Section après"
+      onclick="event.stopPropagation();window.__est.addSection('${escJ(chap)}','${escJ(sec)}')">§+</button>
+    ${promoteSecBtn}
+    ${delBtn}`;
+}
+
+function sectionHasArticleTotal(secArts) {
+  return secArts.some(a => lineTotalCatalog(a) > 0);
+}
+
+/** Total section : Σ articles si montant détail > 0, sinon ratio macro × diviseur. */
+function sectionDisplayTotal(chap, sec, secArts) {
+  const detail = round2(secArts.reduce((s, a) => s + lineTotalCatalog(a), 0));
+  if (sectionHasArticleTotal(secArts)) return detail;
+  const st = sectionState[secUiKey(chap, sec)];
+  if (st && st.use_macro && st.ratio_m2_override != null) {
+    const ratio = parseFloat(st.ratio_m2_override);
+    const divisor = parseFloat(st.qty) || (isPVChap(chap) ? kwc : sdo);
+    if (ratio > 0 && divisor > 0) return round2(ratio * divisor);
+  }
+  return detail;
+}
+
 function round2(x) {
   return Number((Number(x) || 0).toFixed(2));
+}
+
+/** Champ désignation — même rendu que le texte catalogue (sans cadre type nombre). */
+function estimDesigInput(value, extraAttrs, extraClass) {
+  const cls = ['estim-desig-edit', extraClass || ''].filter(Boolean).join(' ');
+  return `<input type="text" class="${cls}" ${extraAttrs || ''}
+    value="${esc(value || '')}" placeholder="Désignation"
+    title="Désignation" onclick="event.stopPropagation()">`;
 }
 
 function money(n) {
@@ -170,6 +395,7 @@ function isEnsLikeUnit(unitRaw) {
 }
 
 function applyLocalM2FromSdo() {
+  if (typeof ESTIMATION_INITIALIZED !== 'undefined' && ESTIMATION_INITIALIZED) return;
   const val = round2(sdo);
   for (const r of localCatalog) {
     if (isCatalogM2Unit(r.unit)) r.quantity = val;
@@ -183,6 +409,20 @@ function buildTree(rows) {
     if (!tree[ch]) tree[ch] = {};
     if (!tree[ch][a.section]) tree[ch][a.section] = [];
     tree[ch][a.section].push(a);
+  }
+  return tree;
+}
+
+/** Sections locales sans article encore visible dans l'arbre. */
+function mergeEmptySectionsIntoTree(tree) {
+  for (const chap of CHAP_ORDER) {
+    if (!tree[chap]) tree[chap] = {};
+    for (const k of Object.keys(sectionState)) {
+      if (!k.startsWith(chap + '|||')) continue;
+      const sec = sectionState[k].section;
+      if (sec == null || sec === '') continue;
+      if (!tree[chap][sec]) tree[chap][sec] = [];
+    }
   }
   return tree;
 }
@@ -226,12 +466,24 @@ function lineTotalCustom(c) {
 
 function recomputeTotals() {
   const t = { CFO: 0, CFA: 0, PV: 0 };
+  const bySection = new Map();
+  for (const r of localCatalog) {
+    const sk = secUiKey(r.chapter, r.section);
+    if (!bySection.has(sk)) bySection.set(sk, { chap: r.chapter, sec: r.section, lot: r.lot || 'CFO', arts: [] });
+    bySection.get(sk).arts.push(r);
+  }
+  const doneSec = new Set();
   for (const r of localCatalog) {
     if (!isChapterIncluded(r.chapter)) continue;
     if (!isSectionIncluded(r.chapter, r.section)) continue;
-    const lot = r.lot || 'CFO';
-    if (!t[lot]) t[lot] = 0;
-    t[lot] = round2(t[lot] + lineTotalCatalog(r));
+    const sk = secUiKey(r.chapter, r.section);
+    if (doneSec.has(sk)) continue;
+    doneSec.add(sk);
+    const bucket = bySection.get(sk);
+    if (!bucket) continue;
+    const lot = bucket.lot || 'CFO';
+    const secTot = sectionDisplayTotal(bucket.chap, bucket.sec, bucket.arts);
+    t[lot] = round2((t[lot] || 0) + secTot);
   }
   for (const c of localCustom) {
     let lot = (c.line_lot || 'CFO').toUpperCase();
@@ -282,6 +534,8 @@ function flushParamsSave() {
   const elKwc = document.getElementById('hdr-kwc');
   const elPh = document.getElementById('hdr-phase');
   const elTp = document.getElementById('hdr-taux-phase');
+  const elIncert = document.getElementById('hdr-taux-incertitude');
+  const elRisque = document.getElementById('hdr-coef-risque');
   if (!elSdo || !elKwc || !elPh) return;
 
   const phase = elPh.value || 'APD';
@@ -291,9 +545,11 @@ function flushParamsSave() {
 
   const body = {
     surface_sdo: parseFloat(elSdo.value) || 0,
-    kva_cible: parseFloat(elKwc.value) || 0,
+    puissance_pv_kwc: parseFloat(elKwc.value) || 0,
     phase_etude: phase,
     taux_phase: tp,
+    taux_incertitude: elIncert ? (parseFloat(elIncert.value) || 0) : 3,
+    coef_risque: elRisque ? (parseFloat(elRisque.value) || 0) : 1,
   };
 
   fetch(`/api/affaire/${AFFAIRE_ID}/params`, {
@@ -305,6 +561,14 @@ function flushParamsSave() {
     .then((data) => {
       sdo = parseFloat(elSdo.value) || 0;
       kwc = parseFloat(elKwc.value) || 0;
+      if (typeof ESTIMATION_INITIALIZED !== 'undefined' && ESTIMATION_INITIALIZED) {
+        for (const st of Object.values(sectionState)) {
+          if (!st.use_macro) continue;
+          const chap = st.chapter;
+          st.qty = round2(isPVChap(chap) ? kwc : sdo);
+        }
+        return data;
+      }
       applyLocalM2FromSdo();
       return fetchRatiosAndMerge().catch(() => {}).then(() => data);
     })
@@ -360,17 +624,20 @@ function flushChapterSave(ch) {
 
 function flushSectionSave(chap, sec) {
   const st = ensureSectionState(chap, sec);
+  const payload = {
+    chapter_key: st.chapter_key,
+    is_included: !!st.is_included,
+    use_macro: !!st.use_macro,
+    qty: parseFloat(st.qty) || 1.0,
+  };
+  if (st.ratio_m2_override != null) {
+    payload.ratio_m2_override = parseFloat(st.ratio_m2_override);
+  }
+  if (st.is_local) payload.is_local = true;
   fetch(`/api/affaire/${AFFAIRE_ID}/chapter_settings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      settings: [{
-        chapter_key: st.chapter_key,
-        is_included: !!st.is_included,
-        use_macro: !!st.use_macro,
-        qty: parseFloat(st.qty) || 1.0,
-      }],
-    }),
+    body: JSON.stringify({ settings: [payload] }),
   })
     .then(r => (r.ok ? r.json() : Promise.reject(new Error('sect'))))
     .then((data) => {
@@ -386,6 +653,32 @@ function onChapterIncludedChange(ch, checked) {
   render();
   updateKpiStrip(recomputeTotals());
   scheduleChapterSave(ch);
+}
+
+function sectionMacroUnitLabel(chap) {
+  return isPVChap(chap) ? '€/kWc' : '€/m²';
+}
+
+function onSectionMacroInput(chap, sec, field, rawVal, inputEl) {
+  const st = ensureSectionState(chap, sec);
+  const v = parseFloat(rawVal);
+  if (!Number.isFinite(v) || v < 0) return;
+  if (field === 'qty') {
+    st.qty = round2(v);
+  } else if (field === 'ratio') {
+    st.ratio_m2_override = round2(v);
+    st.use_macro = true;
+  }
+  const secArts = localCatalog.filter(a => a.chapter === chap && a.section === sec);
+  const secTot = sectionDisplayTotal(chap, sec, secArts);
+  const secInc = isSectionIncluded(chap, sec);
+  if (inputEl) {
+    const tr = inputEl.closest('tr.row-sec-macro');
+    const totEl = tr && tr.querySelector('.sec-macro-total');
+    if (totEl) totEl.textContent = moneyTot(secInc ? secTot : 0);
+  }
+  updateKpiStrip(recomputeTotals());
+  scheduleSectionSave(chap, sec);
 }
 
 function onSectionIncludedChange(chap, sec, checked) {
@@ -448,13 +741,30 @@ function showFlash(msg, isErr) {
 }
 
 function markDirtyCatalog(row) {
+  if (row.is_tree_custom && row.line_id) {
+    const key = `tree__${row.line_id}`;
+    const pu = row.unit_price_ht;
+    dirtyMap.set(key, {
+      line_id: row.line_id,
+      quantity: parseFloat(row.quantity) || 0,
+      unit_price_ht: pu === '' || pu === undefined || pu === null ? 0 : parseFloat(pu),
+      line_designation: row.designation || '',
+      unit_override: row.unit || 'u',
+      line_lot: row.lot || 'CFO',
+    });
+    schedSave();
+    return;
+  }
   const key = `cat__${row.dpgf_id}`;
   const pu = row.unit_price_ht;
-  dirtyMap.set(key, {
+  const payload = {
     dpgf_article_id: row.dpgf_id,
     quantity: parseFloat(row.quantity) || 0,
     unit_price_ht: pu === '' || pu === undefined ? null : pu,
-  });
+    line_designation: (row.designation || '').trim(),
+  };
+  if (row.line_id) payload.line_id = row.line_id;
+  dirtyMap.set(key, payload);
   schedSave();
 }
 
@@ -598,9 +908,76 @@ function toggleCustomBlock() {
   render();
 }
 
-function onCatalogInput(dpgfId, field, raw, elTotal) {
-  const row = localCatalog.find(x => x.dpgf_id === dpgfId);
+let secRenameTimer = null;
+
+function scheduleSectionRename(chap, oldSec, newSec) {
+  clearTimeout(secRenameTimer);
+  secRenameTimer = setTimeout(() => {
+    callEstimationLayout('rename_section', {
+      chapter: chap,
+      old_section: oldSec,
+      new_section: newSec,
+    }).then(data => {
+      if (!data) return;
+      const renamedSec = data.section || newSec;
+      const kOld = secUiKey(chap, oldSec);
+      const kNew = secUiKey(chap, renamedSec);
+      const previousState = sectionState[kOld] || {
+        chapter: chap,
+        is_included: true,
+        use_macro: true,
+        qty: isPVChap(chap) ? kwc : sdo,
+        ratio_m2_override: 0,
+        is_local: true,
+      };
+      sectionState[kNew] = Object.assign({}, previousState, {
+        chapter: chap,
+        section: renamedSec,
+        chapter_key: `sect:${chap}|${renamedSec}`,
+        is_local: true,
+      });
+      delete sectionState[kOld];
+      for (const key of Object.keys(sectionState)) {
+        if (key !== kNew && sectionState[key].chapter === chap && sectionState[key].section === oldSec) {
+          delete sectionState[key];
+        }
+      }
+      if (sectionSortOrder[kOld] != null && sectionSortOrder[kNew] == null) {
+        sectionSortOrder[kNew] = sectionSortOrder[kOld];
+      }
+      delete sectionSortOrder[kOld];
+      for (const r of localCatalog) {
+        if (r.chapter === chap && r.section === oldSec) r.section = renamedSec;
+      }
+      if (expandedSecs.has(kOld)) {
+        expandedSecs.delete(kOld);
+        expandedSecs.add(kNew);
+      }
+      showFlash('Sous-chapitre renommé');
+      render();
+      updateKpiStrip(recomputeTotals());
+    });
+  }, 600);
+}
+
+function onSectionNameInput(chap, oldSec, raw) {
+  const name = (raw || '').trim();
+  if (!name || name === oldSec) return;
+  scheduleSectionRename(chap, oldSec, name);
+}
+
+function onCatalogInput(dpgfId, field, raw, elTotal, lineId) {
+  let row = dpgfId ? localCatalog.find(x => x.dpgf_id === dpgfId) : null;
+  if (!row && lineId) row = localCatalog.find(x => x.line_id === lineId);
   if (!row) return;
+  if (field === 'desig') {
+    row.designation = (raw || '').trim();
+    if (!elTotal) {
+      updateKpiStrip(recomputeTotals());
+      markDirtyCatalog(row);
+      return;
+    }
+  }
   if (field === 'qty') {
     row.quantity = raw === '' ? 0 : parseFloat(raw);
     if (Number.isNaN(row.quantity)) row.quantity = 0;
@@ -672,7 +1049,7 @@ function deleteCustomLine(lineId) {
 
 function render() {
   const arts = filteredCatalog();
-  const tree  = buildTree(arts);
+  const tree  = mergeEmptySectionsIntoTree(buildTree(arts));
   const custF = filteredCustom();
   const rows  = [];
   let visibleArt = 0;
@@ -684,9 +1061,14 @@ function render() {
     const allArts = Object.values(tree[chap]).flat();
     const chapInc = isChapterIncluded(chap);
     let chapSumRaw = 0;
+    const chapSecsDone = new Set();
     for (const a of allArts) {
       if (!isSectionIncluded(chap, a.section)) continue;
-      chapSumRaw = round2(chapSumRaw + lineTotalCatalog(a));
+      const sk = secUiKey(chap, a.section);
+      if (chapSecsDone.has(sk)) continue;
+      chapSecsDone.add(sk);
+      const secArts = tree[chap][a.section] || [];
+      chapSumRaw = round2(chapSumRaw + sectionDisplayTotal(chap, a.section, secArts));
     }
     const chapSumDisp = chapInc ? chapSumRaw : 0;
     const ratioChip = chapterRatioChipHtml(chap, chapSumRaw, chapInc);
@@ -715,16 +1097,59 @@ function render() {
 
     if (!chapOpen && !searchQ) continue;
 
-    for (const [sec, secArts] of Object.entries(tree[chap])) {
+    for (const [sec, secArts] of sortedSectionEntries(chap, tree[chap])) {
       ensureSectionState(chap, sec);
       const secKey = chap + '|||' + sec;
       const secOpen = expandedSecs.has(secKey) || !!searchQ;
-      const secSumRaw = round2(secArts.reduce((s, a) => s + lineTotalCatalog(a), 0));
+      const secSumRaw = sectionDisplayTotal(chap, sec, secArts);
       const secInc = isSectionIncluded(chap, sec);
       const secSumDisp = secInc ? secSumRaw : 0;
       const secRowClass = !chapInc ? 'chap-excluded' : (!secInc ? 'sec-excluded' : '');
+      const stSec = ensureSectionState(chap, sec);
+      const secMacro = stSec.is_local || (stSec.use_macro && stSec.ratio_m2_override != null);
+      const secLabelHtml = stSec.is_local
+        ? estimDesigInput(sec, `data-sec-name="1" data-chap="${esc(chap)}" data-sec="${esc(sec)}"`, 'sec-desig-edit')
+        : `<span class="sec-label">${esc(sec)}</span>`;
+      const secDivisor = parseFloat(stSec.qty) || (isPVChap(chap) ? kwc : sdo);
+      const secRatioVal = secMacro ? parseFloat(stSec.ratio_m2_override) : 0;
 
-      rows.push(`
+      if (secMacro) {
+        rows.push(`
+        <tr class="row-sec row-sec-macro ${secRowClass}" onclick="window.__est.toggleSec(event,'${escJ(chap)}','${escJ(sec)}')">
+          <td class="td-stripe ${cm.cls}"></td>
+          <td>
+            <div class="sec-cell">
+              <label class="estim-sec-cb-wrap" onclick="event.stopPropagation()">
+                <input type="checkbox" class="estim-sec-cb" data-chap="${esc(chap)}" data-sec="${esc(sec)}" ${secInc ? 'checked' : ''}
+                  title="Inclure ce sous-chapitre dans les totaux et KPI">
+              </label>
+              <span class="chev ${secOpen ? 'open' : ''}">
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 4l4 4-4 4"/></svg>
+              </span>
+              ${secLabelHtml}
+              <span class="sec-count">${secArts.length} art.</span>
+              ${sectionActionButtons(chap, sec, secArts)}
+            </div>
+          </td>
+          <td class="cell-ref r"><span class="estim-readonly sec-macro-unit">${sectionMacroUnitLabel(chap)}</span></td>
+          <td class="cell-ref r"><span class="estim-readonly">—</span></td>
+          <td class="cell-est r">
+            <input type="number" class="estim-inp estim-sec-macro-inp" min="0" step="1"
+              data-sec-field="qty" data-chap="${esc(chap)}" data-sec="${esc(sec)}"
+              value="${esc(String(secDivisor))}" title="Surface ou puissance (diviseur)"
+              onclick="event.stopPropagation()">
+          </td>
+          <td class="cell-est r">
+            <input type="number" class="estim-inp estim-sec-macro-inp" min="0" step="0.01"
+              data-sec-field="ratio" data-chap="${esc(chap)}" data-sec="${esc(sec)}"
+              value="${esc(String(secRatioVal))}" title="Ratio €/m² ou €/kWc"
+              onclick="event.stopPropagation()">
+          </td>
+          <td class="r sec-num-cell cell-est sec-macro-total">${moneyTot(secSumDisp)}</td>
+          <td></td>
+        </tr>`);
+      } else {
+        rows.push(`
         <tr class="row-sec ${secRowClass}" onclick="window.__est.toggleSec(event,'${escJ(chap)}','${escJ(sec)}')">
           <td class="td-stripe ${cm.cls}"></td>
           <td colspan="5">
@@ -736,18 +1161,21 @@ function render() {
               <span class="chev ${secOpen ? 'open' : ''}">
                 <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 4l4 4-4 4"/></svg>
               </span>
-              <span class="sec-label">${esc(sec)}</span>
+              ${secLabelHtml}
               <span class="sec-count">${secArts.length} art.</span>
+              ${sectionActionButtons(chap, sec, secArts)}
             </div>
           </td>
           <td class="r sec-num-cell cell-est">${moneyTot(secSumDisp)}</td>
           <td></td>
         </tr>`);
+      }
 
       if (!secOpen) continue;
 
       for (const a of secArts) {
         visibleArt++;
+        const isTree = !!a.is_tree_custom;
         const refPu = parseFloat(a.ref_pu_ht) || 0;
         const qtyParsed = parseFloat(a.quantity);
         const qtyVal = Number.isFinite(qtyParsed) ? qtyParsed : 0;
@@ -763,28 +1191,46 @@ function render() {
           ? ` <span class="line-unit-ratio" title="PU implicite ligne">${num(round2(tot / qtyVal), 2)} €/m²</span>`
           : '';
 
+        const totId = isTree ? `tot-ln-${a.line_id}` : `tot-${a.dpgf_id}`;
+        const dataIdAttr = isTree
+          ? `data-line-id="${a.line_id}" data-tree-custom="1"`
+          : `data-dpgf-id="${a.dpgf_id}"`;
         rows.push(`
-          <tr class="row-art ${lineInc ? '' : 'row-art-muted'}" data-dpgf-id="${a.dpgf_id}">
+          <tr class="row-art ${lineInc ? '' : 'row-art-muted'}" ${dataIdAttr}>
             <td class="td-stripe ${cm.cls}"></td>
-            <td class="art-desig-cell">${esc(a.designation)}${lineM2Ratio} ${ratioTag}</td>
+            <td class="art-desig-cell">${
+              estimDesigInput(
+                a.designation,
+                `data-field="desig"${a.line_id ? ` data-line-id="${a.line_id}"` : ''} ${isTree ? 'data-tree-custom="1"' : `data-dpgf-id="${a.dpgf_id}"`}`,
+                'art-desig-edit',
+              )
+            }${lineM2Ratio} ${ratioTag}${isTree ? ' <span class="ratio-tag ratio-unit">A</span>' : ''}</td>
             <td class="cell-ref r"><span class="estim-readonly">${esc(a.unit || '—')}</span></td>
             <td class="cell-ref r"><span class="estim-readonly">${refPu ? money(refPu) : '—'}</span></td>
             <td class="cell-est r">
-              <input type="number" class="estim-inp" min="0" step="0.01" data-field="qty" data-dpgf-id="${a.dpgf_id}"
+              <input type="number" class="estim-inp" min="0" step="0.01" data-field="qty" ${dataIdAttr}
                 value="${esc(String(qtyVal))}" placeholder="0" title="Quantité">
             </td>
             <td class="cell-est r">
-              <input type="number" class="estim-inp" min="0" step="0.01" data-field="pu" data-dpgf-id="${a.dpgf_id}"
+              <input type="number" class="estim-inp" min="0" step="0.01" data-field="pu" ${dataIdAttr}
                 value="${puDisp !== '' ? esc(String(puDisp)) : ''}" placeholder="${refPu ? esc(String(refPu)) : '0'}" title="Vide = PU référentiel">
             </td>
-            <td class="cell-est r cell-total-est" id="tot-${a.dpgf_id}">${moneyTot(tot)}</td>
-            <td></td>
+            <td class="cell-est r cell-total-est" id="${totId}">${moneyTot(tot)}</td>
+            <td class="cell-act">
+              ${isTree ? `<button type="button" class="estim-promote-btn" title="Ajouter à la base de prix"
+                onclick="event.stopPropagation();window.__est.promoteArticle(${a.line_id},'${escJ(a.designation || '')}')">📖</button>` : ''}
+              <button type="button" class="estim-move-btn" title="Monter"
+                onclick="event.stopPropagation();window.__est.moveArticle('${escJ(chap)}','${escJ(sec)}','up',${a.dpgf_id || 'null'},${a.line_id || 'null'})">▲</button>
+              <button type="button" class="estim-move-btn" title="Descendre"
+                onclick="event.stopPropagation();window.__est.moveArticle('${escJ(chap)}','${escJ(sec)}','down',${a.dpgf_id || 'null'},${a.line_id || 'null'})">▼</button>
+            </td>
           </tr>`);
       }
     }
   }
 
-  /* Hors catalogue */
+  /* Hors catalogue : affiché seulement si des lignes existent (pas de création via UI) */
+  if (custF.length > 0) {
   const cOpen = expandedChaps.has(CUSTOM_CHAP);
   const cSum = round2(custF.reduce((s, c) => s + lineTotalCustom(c), 0));
   rows.push(`
@@ -828,8 +1274,7 @@ function render() {
           <tr class="row-art row-art-custom" data-line-id="${c.line_id}">
             <td class="td-stripe s-cfo"></td>
             <td class="cell-est">
-              <input type="text" class="estim-inp estim-inp-txt" data-field="desig" data-line-id="${c.line_id}"
-                value="${esc(c.line_designation || '')}" placeholder="Désignation">
+              ${estimDesigInput(c.line_designation, `data-field="desig" data-line-id="${c.line_id}"`, 'art-desig-edit')}
             </td>
             <td class="cell-ref r"><span class="estim-readonly">—</span></td>
             <td class="cell-ref r"><span class="estim-readonly">—</span></td>
@@ -866,6 +1311,7 @@ function render() {
       }
     }
   }
+  }
 
   const tbody = document.getElementById('tree-body');
   if (rows.length === 0) {
@@ -890,15 +1336,53 @@ function render() {
     });
   });
 
-  tbody.querySelectorAll('input[data-dpgf-id]').forEach(inp => {
+  tbody.querySelectorAll('input[data-sec-field]').forEach(inp => {
+    const handler = () => {
+      onSectionMacroInput(
+        inp.getAttribute('data-chap'),
+        inp.getAttribute('data-sec'),
+        inp.getAttribute('data-sec-field'),
+        inp.value,
+        inp,
+      );
+    };
+    inp.addEventListener('input', handler);
+    inp.addEventListener('change', handler);
+  });
+
+  tbody.querySelectorAll('input[data-field="desig"]').forEach(inp => {
     inp.addEventListener('input', () => {
-      const id = parseInt(inp.dataset.dpgfId, 10);
-      const totEl = document.getElementById(`tot-${id}`);
-      onCatalogInput(id, inp.dataset.field, inp.value, totEl);
+      const dpgfId = inp.dataset.dpgfId ? parseInt(inp.dataset.dpgfId, 10) : null;
+      const lineId = inp.dataset.lineId ? parseInt(inp.dataset.lineId, 10) : null;
+      const totEl = dpgfId
+        ? document.getElementById(`tot-${dpgfId}`)
+        : (lineId ? document.getElementById(`tot-ln-${lineId}`) : null);
+      onCatalogInput(dpgfId, 'desig', inp.value, totEl, lineId);
     });
   });
 
-  tbody.querySelectorAll('input[data-line-id], select[data-line-id]').forEach(inp => {
+  tbody.querySelectorAll('input[data-dpgf-id]:not([data-field="desig"]), input[data-tree-custom]:not([data-field="desig"])').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const dpgfId = inp.dataset.dpgfId ? parseInt(inp.dataset.dpgfId, 10) : null;
+      const lineId = inp.dataset.lineId ? parseInt(inp.dataset.lineId, 10) : null;
+      const totEl = dpgfId
+        ? document.getElementById(`tot-${dpgfId}`)
+        : document.getElementById(`tot-ln-${lineId}`);
+      onCatalogInput(dpgfId, inp.dataset.field, inp.value, totEl, lineId);
+    });
+  });
+
+  tbody.querySelectorAll('input[data-sec-name]').forEach(inp => {
+    inp.addEventListener('change', () => {
+      onSectionNameInput(
+        inp.getAttribute('data-chap'),
+        inp.getAttribute('data-sec'),
+        inp.value,
+      );
+    });
+  });
+
+  tbody.querySelectorAll('input[data-line-id]:not([data-tree-custom]), select[data-line-id]').forEach(inp => {
     inp.addEventListener('input', () => syncCustom(inp));
     inp.addEventListener('change', () => syncCustom(inp));
   });
@@ -923,6 +1407,13 @@ window.__est = {
   toggleCustom: toggleCustomBlock,
   onChapterIncludedChange,
   onSectionIncludedChange,
+  addSection: addEstimationSection,
+  addArticle: addEstimationArticle,
+  deleteSection: deleteEstimationSection,
+  moveSection: moveEstimationSection,
+  moveArticle: moveEstimationArticle,
+  promoteSection: promoteEstimationSection,
+  promoteArticle: promoteEstimationArticle,
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -940,11 +1431,15 @@ document.addEventListener('DOMContentLoaded', () => {
   const hdrKwc = document.getElementById('hdr-kwc');
   const hdrPhase = document.getElementById('hdr-phase');
   const hdrTaux = document.getElementById('hdr-taux-phase');
+  const hdrIncert = document.getElementById('hdr-taux-incertitude');
+  const hdrRisque = document.getElementById('hdr-coef-risque');
   setupSelectOnFocusOnce();
   if (hdrSdo && hdrKwc && hdrPhase) {
     ['input', 'change'].forEach(ev => {
       hdrSdo.addEventListener(ev, scheduleParamsSave);
       hdrKwc.addEventListener(ev, scheduleParamsSave);
+      if (hdrIncert) hdrIncert.addEventListener(ev, scheduleParamsSave);
+      if (hdrRisque) hdrRisque.addEventListener(ev, scheduleParamsSave);
     });
     hdrPhase.addEventListener('change', () => {
       const ph = hdrPhase.value;
@@ -966,7 +1461,8 @@ document.addEventListener('DOMContentLoaded', () => {
     render();
   });
 
-  document.getElementById('btn-add-custom').addEventListener('click', addCustomLine);
+  const btnAddCustom = document.getElementById('btn-add-custom');
+  if (btnAddCustom) btnAddCustom.addEventListener('click', addCustomLine);
 
   document.getElementById('btn-export-xlsx').addEventListener('click', () => {
     alert('Export Excel — fonctionnalité à venir (placeholder).');

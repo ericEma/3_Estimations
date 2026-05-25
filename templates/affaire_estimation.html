@@ -1,185 +1,138 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Estimation affaire — {{ affaire.name }} — Egis Elec-Explorer</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css">
-</head>
-<body class="bibl-page estim-page">
-<div id="root">
+{% extends "base.html" %}
+{% block title %}Estimation — {{ affaire.name }}{% endblock %}
+{% block page_subtitle %}Estimation d'affaire{% endblock %}
+{% block body_class %} estim-page bibl-content-page{% endblock %}
 
-  <div class="app-header">
-    <a class="logo" href="/">
-      <div class="logo-mark">EE</div>
-      <div>
-        <div class="logo-name">Egis Elec-Explorer</div>
-        <div class="logo-sub">Estimation d'affaire</div>
-      </div>
-    </a>
-    <div class="h-sep"></div>
-    <div class="sdo-group">
-      <span class="sdo-lbl">SDO</span>
-      <input type="number" class="sdo-inp estim-hdr-inp" id="hdr-sdo" min="1" step="1"
-             value="{{ affaire.surface_sdo | int }}" title="Surface SDO (m²) — sauvegarde auto">
-      <span class="sdo-unit">m²</span>
-    </div>
-    <div class="h-sep"></div>
-    <div class="sdo-group">
-      <span class="sdo-lbl">Puissance PV</span>
-      <input type="number" class="sdo-inp estim-hdr-inp" id="hdr-kwc" min="0" step="1"
-             value="{{ (affaire.kva_cible or 800) | int }}" title="Puissance PV cible (kWc) — sauvegarde auto">
-      <span class="sdo-unit">kWc</span>
-    </div>
-    <div class="h-sep"></div>
-    <div class="sdo-group estim-phase-row">
-      <span class="sdo-lbl">Phase</span>
-      <select class="sdo-inp estim-hdr-inp estim-hdr-sel" id="hdr-phase" title="Phase d’étude — palier taux phase Egis">
-        {% set ph = affaire.phase_etude or 'APD' %}
-        <option value="DIAG" {% if ph == 'DIAG' %}selected{% endif %}>DIAG</option>
-        <option value="APS" {% if ph == 'APS' %}selected{% endif %}>APS</option>
-        <option value="APD" {% if ph == 'APD' %}selected{% endif %}>APD</option>
-        <option value="PRO" {% if ph == 'PRO' %}selected{% endif %}>PRO</option>
-      </select>
-      <input type="range" class="estim-phase-range" id="hdr-taux-phase" min="0" max="30" step="0.01"
-             value="{{ affaire.taux_phase or 3 }}" title="Taux phase (%) — ajustement fin">
-      <span class="estim-phase-lbl" id="hdr-taux-phase-lbl"></span>
-    </div>
-    <div class="h-spacer"></div>
-    <a class="h-home" href="{{ url_for('affaire_edit', affaire_id=affaire.id) }}">Fiche affaire</a>
-    <span class="h-sep"></span>
-    <a class="h-home" href="{{ url_for('index') }}">Dashboard</a>
+{% block header_extra %}
+<div class="h-sep"></div>
+<div class="sdo-group">
+  <span class="sdo-lbl">SDO</span>
+  <input type="number" class="sdo-inp estim-hdr-inp" id="hdr-sdo" min="1" step="1"
+         value="{{ affaire.surface_sdo | int }}" title="Surface SDO (m²) — sauvegarde auto">
+  <span class="sdo-unit">m²</span>
+</div>
+<div class="h-sep"></div>
+<div class="sdo-group">
+  <span class="sdo-lbl">Puissance PV</span>
+  <input type="number" class="sdo-inp estim-hdr-inp" id="hdr-kwc" min="0" step="1"
+         value="{{ (affaire.puissance_pv_kwc or 100) | int }}" title="Puissance PV (kWc) — sauvegarde auto">
+  <span class="sdo-unit">kWc</span>
+</div>
+<div class="h-sep"></div>
+<div class="sdo-group estim-phase-row">
+  <span class="sdo-lbl">Phase</span>
+  <select class="sdo-inp estim-hdr-inp estim-hdr-sel" id="hdr-phase" title="Phase d'étude — palier taux phase Egis">
+    {% set ph = affaire.phase_etude or 'APD' %}
+    <option value="DIAG" {% if ph == 'DIAG' %}selected{% endif %}>DIAG</option>
+    <option value="APS" {% if ph == 'APS' %}selected{% endif %}>APS</option>
+    <option value="APD" {% if ph == 'APD' %}selected{% endif %}>APD</option>
+    <option value="PRO" {% if ph == 'PRO' %}selected{% endif %}>PRO</option>
+  </select>
+  <input type="range" class="estim-phase-range" id="hdr-taux-phase" min="0" max="30" step="0.01"
+         value="{{ affaire.taux_phase or 3 }}" title="Taux phase (%) — ajustement fin">
+  <span class="estim-phase-lbl" id="hdr-taux-phase-lbl"></span>
+  <span class="sdo-lbl">Incert.</span>
+  <input type="number" class="sdo-inp estim-hdr-inp" id="hdr-taux-incertitude" min="0" max="50" step="0.01"
+         value="{{ affaire.taux_incertitude or 3 }}" title="Taux incertitude (%) — sauvegarde auto">
+  <span class="sdo-unit">%</span>
+  <span class="sdo-lbl">Risque</span>
+  <input type="number" class="sdo-inp estim-hdr-inp" id="hdr-coef-risque" min="0" max="30" step="0.01"
+         value="{{ affaire.coef_risque or 1 }}" title="Taux risque / aléa (%) — sauvegarde auto">
+  <span class="sdo-unit">%</span>
+</div>
+{% endblock %}
+
+{% block header_actions %}
+<a class="h-home" href="{{ url_for('affaire_edit', affaire_id=affaire.id) }}">Fiche affaire</a>
+{% endblock %}
+
+{% block content %}
+<div class="kpi-strip">
+  <div class="kpi cfo">
+    <div class="kpi-lbl">Courants Forts</div>
+    <div class="kpi-val" id="kpi-cfo">{{ totals.CFO | round(2) }}<small>€ HT</small></div>
+    <div class="kpi-sub" id="kpi-cfo-m2">—</div>
   </div>
-
-  <div class="app-shell">
-    <div class="sidebar">
-      <div class="sb-sec">
-        <div class="sb-lbl">Navigation</div>
-        <a class="sb-nav" href="{{ url_for('index') }}">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="1" y="3" width="14" height="11" rx="1.5"/><path d="M5 3V2M11 3V2M1 7h14"/></svg>
-          Mes Affaires
-        </a>
-        <a class="sb-nav on" href="{{ url_for('affaire_estimation', affaire_id=affaire.id) }}">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="2" width="12" height="12" rx="1"/><path d="M5 6h6M5 9h4"/></svg>
-          Estimation affaire
-        </a>
-        <a class="sb-nav" href="{{ url_for('bibliotheque', affaire_id=affaire.id) }}">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M5 5h6M5 8h6M5 11h3"/></svg>
-          Bibliothèque DPGF
-        </a>
-      </div>
-      <div class="sb-divider"></div>
-      <div class="sb-sec">
-        <div class="sb-lbl">Autres affaires</div>
-        {% for a in affaires %}
-        {% if a.id != affaire.id %}
-        <a class="aff-item" href="{{ url_for('affaire_estimation', affaire_id=a.id) }}">
-          <div class="aff-name">{{ a.name }}</div>
-          <div class="aff-meta">{{ a.surface_sdo | int }} m²</div>
-        </a>
-        {% endif %}
-        {% endfor %}
-      </div>
-    </div>
-
-    <div class="main">
-      <div class="kpi-strip">
-        <div class="kpi cfo">
-          <div class="kpi-lbl">Courants Forts</div>
-          <div class="kpi-val" id="kpi-cfo">{{ totals.CFO | round(2) }}<small>€ HT</small></div>
-          <div class="kpi-sub" id="kpi-cfo-m2">—</div>
-        </div>
-        <div class="kpi cfa">
-          <div class="kpi-lbl">Courants Faibles</div>
-          <div class="kpi-val" id="kpi-cfa">{{ totals.CFA | round(2) }}<small>€ HT</small></div>
-          <div class="kpi-sub" id="kpi-cfa-m2">—</div>
-        </div>
-        <div class="kpi pv">
-          <div class="kpi-lbl">Photovoltaïque</div>
-          <div class="kpi-val" id="kpi-pv">{{ totals.PV | round(2) }}<small>€ HT</small></div>
-          <div class="kpi-sub" id="kpi-pv-m2">—</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-lbl">Total HT estimé</div>
-          <div class="kpi-val" id="kpi-total">{{ totals.ALL | round(2) }}<small>€ HT</small></div>
-          <div class="kpi-sub" id="kpi-total-m2">—</div>
-        </div>
-      </div>
-
-      <div class="tbar">
-        <span class="tbar-title" id="tbar-title">{{ affaire.name }} — mode snapshot catalogue</span>
-        <div class="search-wrap">
-          <svg class="search-ico" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l3 3"/></svg>
-          <input class="search-inp" id="search-inp" type="text" placeholder="Rechercher…">
-        </div>
-        <button type="button" class="btn btn-outlined" id="btn-add-custom" title="Ajouter une ligne hors catalogue">
-          + Ligne hors catalogue
-        </button>
-        <button type="button" class="btn btn-outlined" id="btn-export-xlsx" title="Fonctionnalité à venir">
-          Export Excel
-        </button>
-        <button class="btn btn-outlined" onclick="setExpandAll(true)">Tout ouvrir</button>
-        <button class="btn btn-outlined" onclick="setExpandAll(false)">Tout fermer</button>
-        <span class="tt-count" id="art-count"></span>
-      </div>
-
-      <div class="estim-legend">
-        <span class="estim-legend-ref">Référentiel (lecture seule)</span>
-        <span class="estim-legend-est">Zone estimation (saisie)</span>
-      </div>
-
-      <div class="grid-panel-wrap">
-        <div class="grid-wrap" id="grid-wrap">
-          <table class="tree-table estim-table" id="tree-table">
-            <colgroup>
-              <col class="estim-col-stripe"><col class="estim-col-desig">
-              <col class="estim-col-ref"><col class="estim-col-ref">
-              <col class="estim-col-est"><col class="estim-col-est"><col class="estim-col-tot"><col class="estim-col-act">
-            </colgroup>
-            <thead>
-              <tr class="estim-hdr2">
-                <th></th>
-                <th>Désignation</th>
-                <th class="r cell-ref-h">Unité</th>
-                <th class="r cell-ref-h">PU HT</th>
-                <th class="r cell-est-h">Qté</th>
-                <th class="r cell-est-h">PU HT est.</th>
-                <th class="r cell-est-h">Total HT</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="tree-body">
-              <tr><td colspan="8"><div class="empty-state"><div class="empty-ico">⏳</div><div>Chargement…</div></div></td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+  <div class="kpi cfa">
+    <div class="kpi-lbl">Courants Faibles</div>
+    <div class="kpi-val" id="kpi-cfa">{{ totals.CFA | round(2) }}<small>€ HT</small></div>
+    <div class="kpi-sub" id="kpi-cfa-m2">—</div>
   </div>
-
-  <div class="statusbar">
-    <div class="sb-dot"></div>
-    <span>Estimation affaire · sauvegarde automatique</span>
-    <span id="statusbar-ctx">{{ affaire.name }} · SDO {{ affaire.surface_sdo | int }} m²</span>
+  <div class="kpi pv">
+    <div class="kpi-lbl">Photovoltaïque</div>
+    <div class="kpi-val" id="kpi-pv">{{ totals.PV | round(2) }}<small>€ HT</small></div>
+    <div class="kpi-sub" id="kpi-pv-m2">—</div>
   </div>
-
-  <div id="flash-msg" class="flash-msg" style="display:none"></div>
+  <div class="kpi">
+    <div class="kpi-lbl">Total HT estimé</div>
+    <div class="kpi-val" id="kpi-total">{{ totals.ALL | round(2) }}<small>€ HT</small></div>
+    <div class="kpi-sub" id="kpi-total-m2">—</div>
+  </div>
 </div>
 
-<script>
-(function() {
-  function sendHeartbeat() {
-    fetch('/api/heartbeat', { method: 'POST', keepalive: true }).catch(() => {});
-  }
-  sendHeartbeat();
-  setInterval(sendHeartbeat, 3000);
-})();
+<div class="tbar">
+  <span class="tbar-title" id="tbar-title">{{ affaire.name }} — {% if affaire.estimation_initialized_at %}estimation figée (création){% else %}catalogue live{% endif %}</span>
+  <div class="search-wrap">
+    <svg class="search-ico" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l3 3"/></svg>
+    <input class="search-inp" id="search-inp" type="text" placeholder="Rechercher…">
+  </div>
+  <button type="button" class="btn btn-outlined" id="btn-export-xlsx" title="Fonctionnalité à venir">
+    Export Excel
+  </button>
+  <button type="button" class="btn btn-outlined" onclick="setExpandAll(true)">Tout ouvrir</button>
+  <button type="button" class="btn btn-outlined" onclick="setExpandAll(false)">Tout fermer</button>
+  <span class="tt-count" id="art-count"></span>
+</div>
 
+<div class="estim-legend">
+  <span class="estim-legend-ref">Référentiel (lecture seule)</span>
+  <span class="estim-legend-est">Zone estimation (saisie)</span>
+</div>
+
+<div class="grid-panel-wrap">
+  <div class="grid-wrap" id="grid-wrap">
+    <table class="tree-table estim-table" id="tree-table">
+      <colgroup>
+        <col class="estim-col-stripe"><col class="estim-col-desig">
+        <col class="estim-col-ref"><col class="estim-col-ref">
+        <col class="estim-col-est"><col class="estim-col-est"><col class="estim-col-tot"><col class="estim-col-act">
+      </colgroup>
+      <thead>
+        <tr class="estim-hdr2">
+          <th></th>
+          <th>Désignation</th>
+          <th class="r cell-ref-h">Unité</th>
+          <th class="r cell-ref-h">PU HT</th>
+          <th class="r cell-est-h">Qté</th>
+          <th class="r cell-est-h">PU HT est.</th>
+          <th class="r cell-est-h">Total HT</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="tree-body">
+        <tr><td colspan="8"><div class="empty-state"><div class="empty-ico">⏳</div><div>Chargement…</div></div></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div id="flash-msg" class="flash-msg" style="display:none"></div>
+{% endblock %}
+
+{% block page_footer %}
+<div class="statusbar">
+  <div class="sb-dot"></div>
+  <span>Estimation affaire · sauvegarde automatique</span>
+  <span id="statusbar-ctx">{{ affaire.name }} · SDO {{ affaire.surface_sdo | int }} m²</span>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
 const AFFAIRE_ID   = {{ affaire.id }};
+const ESTIMATION_INITIALIZED = {{ 'true' if affaire.estimation_initialized_at else 'false' }};
 const INIT_SDO     = {{ affaire.surface_sdo | int }};
-const INIT_KWC     = {{ (affaire.kva_cible or 800) | int }};
+const INIT_KWC     = {{ (affaire.puissance_pv_kwc or 100) | int }};
 const INIT_CCFO    = {{ affaire.coef_complexity_cfo or 1 }};
 const INIT_CCFA    = {{ affaire.coef_complexity_cfa or 1 }};
 const INIT_CPV     = {{ affaire.coef_complexity_pv or 1 }};
@@ -190,6 +143,5 @@ const CATALOG_ROWS = {{ catalog_rows | tojson }};
 const CUSTOM_ROWS  = {{ custom_rows | tojson }};
 const INITIAL_TOTALS = {{ totals | tojson }};
 </script>
-<script src="/static/js/affaire_estimation.js"></script>
-</body>
-</html>
+<script src="{{ url_for('static', filename='js/affaire_estimation.js') }}"></script>
+{% endblock %}

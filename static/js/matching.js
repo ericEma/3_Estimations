@@ -143,7 +143,7 @@ function renderSection(sec, chap_lot) {
     <thead><tr>
       <th>Désignation Devis</th><th>U.</th><th>Qté</th>
       <th>PU Devis</th><th>Total HT</th><th>Désignation Base</th>
-      <th>PU Base</th><th>PU Calculé ⓘ</th><th>Écart</th><th>Actions</th>
+      <th>PU Base</th><th title="Saisie directe ; laisser vide puis valider pour rétablir le calcul auto après une saisie manuelle.">PU Calculé ⓘ</th><th>Écart</th><th>Actions</th>
     </tr></thead>
     <tbody id="tbody-${sanitizeId(sec.name)}"></tbody>`;
 
@@ -159,6 +159,161 @@ function renderSection(sec, chap_lot) {
   return el;
 }
 
+function findLineById(lineId) {
+  if (!_data || !_data.chapters) return null;
+  for (const chap of _data.chapters) {
+    for (const sec of chap.sections) {
+      for (const l of sec.lines) {
+        if (l.id === lineId) return l;
+      }
+    }
+  }
+  return null;
+}
+
+/** Chapitre et sous-chapitre du référentiel DPGF | désignation article base.
+ *  Si la ligne n'est pas encore mappée, affiche le 1er candidat (même source DPGF). */
+function formatBaseBreadcrumb(line, lineInfo, firstCandidate) {
+  const info = lineInfo || {};
+  let titre = (info.base_chapter != null ? String(info.base_chapter) : '').trim();
+  let sous = (info.base_section != null ? String(info.base_section) : '').trim();
+  if (!titre && line && line.base_chapter != null) titre = String(line.base_chapter).trim();
+  if (!sous && line && line.base_section != null) sous = String(line.base_section).trim();
+  let article = (line && line.base_designation) ? String(line.base_designation).trim() : '';
+
+  const mapped = line && Number(line.dpgf_article_id) > 0;
+  if (!mapped && firstCandidate) {
+    const tc = (firstCandidate.chapter || '').trim();
+    const sc = (firstCandidate.section || '').trim();
+    const ac = (firstCandidate.designation || '').trim();
+    if (tc || sc || ac) {
+      titre = tc || titre;
+      sous = sc || sous;
+      article = ac || article;
+    }
+  }
+
+  if (!titre) titre = '—';
+  if (!sous) sous = '—';
+  const articleDisp = article || '—';
+  return `${titre} | ${sous} | ${articleDisp}`;
+}
+
+/** Texte complet pour attribut title (sélecteur base). */
+function baseSelectorTitle(line) {
+  if (!line) return 'Cliquer pour choisir un article base';
+  const d = (line.base_designation || '').trim();
+  return d || 'Cliquer pour choisir un article base';
+}
+
+function parsePuCalculInput(str) {
+  const t = (str || '').trim().replace(/\s/g, '').replace(',', '.');
+  if (!t) return null;
+  const n = parseFloat(t);
+  if (Number.isNaN(n) || n < 0) return NaN;
+  return n;
+}
+
+function fmtForPuInput(n) {
+  if (n == null || Number.isNaN(n)) return '';
+  return String(n).replace('.', ',');
+}
+
+async function postPuWp(lineId, value) {
+  const body = { weighted_price: value == null ? null : value };
+  const r = await fetch(`/api/matching/line/${lineId}/weighted_price`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const d = await r.json();
+  if (!r.ok || d.status !== 'ok') throw new Error(d.error || 'Erreur');
+  return d;
+}
+
+function updateWpRowFromServer(tr, lineId, d) {
+  const line = findLineById(lineId);
+  if (line) {
+    line.weighted_price = d.weighted_price;
+    line.wp_tooltip = d.wp_tooltip;
+    line.ecart_pct = d.ecart_pct;
+    line.wp_manual = !!d.wp_manual;
+  }
+  const model = line || {
+    id: lineId,
+    mapping_status: tr.classList.contains('mv-excluded') ? 'excluded' : 'manual',
+    weighted_price: d.weighted_price,
+    wp_tooltip: d.wp_tooltip,
+    wp_manual: !!d.wp_manual,
+  };
+  const wpCell = tr.querySelector('.col-pu-wp');
+  if (wpCell) {
+    wpCell.outerHTML = buildWpCell(model);
+  }
+  const ecartCell = tr.querySelector('.col-ecart');
+  if (ecartCell) ecartCell.outerHTML = buildEcartCell(d.ecart_pct);
+  attachPuWpEditor(tr);
+}
+
+async function savePuWpFromInput(tr, inp, td) {
+  const lineId = parseInt(td.dataset.lineId, 10);
+  const wasManual = td.dataset.wpManual === '1';
+  const raw = (inp.value || '').trim();
+  const sw = td.dataset.stableWp;
+  const stable = sw === '' || sw == null ? NaN : parseFloat(String(sw).replace(',', '.'));
+
+  if (raw === '') {
+    if (wasManual) {
+      try {
+        const d = await postPuWp(lineId, null);
+        updateWpRowFromServer(tr, lineId, d);
+        toast('PU calculé : valeur automatique rétablie', 'ok');
+      } catch (e) {
+        toast(e.message, 'err');
+        if (!Number.isNaN(stable)) inp.value = fmtForPuInput(stable);
+      }
+    } else if (!Number.isNaN(stable)) {
+      inp.value = fmtForPuInput(stable);
+    }
+    return;
+  }
+
+  const parsed = parsePuCalculInput(raw);
+  if (Number.isNaN(parsed)) {
+    toast('PU calculé : nombre invalide', 'err');
+    if (!Number.isNaN(stable)) inp.value = fmtForPuInput(stable);
+    return;
+  }
+
+  try {
+    const d = await postPuWp(lineId, parsed);
+    updateWpRowFromServer(tr, lineId, d);
+    toast('PU calculé enregistré', 'ok');
+  } catch (e) {
+    toast(e.message, 'err');
+    if (!Number.isNaN(stable)) inp.value = fmtForPuInput(stable);
+  }
+}
+
+function attachPuWpEditor(tr) {
+  const td = tr.querySelector('.col-pu-wp.pu-wp-cell');
+  if (!td || tr.classList.contains('mv-excluded')) return;
+  const inp = td.querySelector('.pu-wp-input');
+  if (!inp || td.dataset.puBound === '1') return;
+  td.dataset.puBound = '1';
+
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      inp.blur();
+    }
+  });
+
+  inp.addEventListener('blur', () => {
+    savePuWpFromInput(tr, inp, td);
+  });
+}
+
 function renderRow(line, chap_lot) {
   const tr = document.createElement('tr');
   tr.id = `row-${line.id}`;
@@ -170,7 +325,7 @@ function renderRow(line, chap_lot) {
   // Col 1 — toujours le libellé importé depuis le devis (col. B), jamais la base DPGF
   const desig = line.original_designation || '—';
   const td1 = `<td class="col-desig" title="${esc(desig)}">
-    <span class="cell-desig-text">${esc(trunc(desig, 35))}</span>
+    <span class="cell-desig-text">${esc(desig)}</span>
   </td>`;
 
   // Col 2–5 — Numériques
@@ -184,10 +339,11 @@ function renderRow(line, chap_lot) {
   const score = (line.mapping_score != null) ? parseFloat(line.mapping_score) : null;
   const parsingOk = (score != null && !isNaN(score) && score >= 80);
   const needsAttention = !exclu && (!hasMapped || !parsingOk || (line.mapping_status !== 'auto' && line.mapping_status !== 'manual'));
-  const selText = hasMapped ? trunc(line.base_designation, 28) : '⊕ Sélectionner…';
-  const td6 = `<td class="col-base">
+  const selText = hasMapped ? (line.base_designation || '') : '⊕ Sélectionner…';
+  const baseTitleEsc = esc(baseSelectorTitle(line));
+  const td6 = `<td class="col-base" title="${baseTitleEsc}">
     <button class="btn-selector ${hasMapped ? 'mapped' : ''} ${needsAttention ? 'needs-attention' : ''}"
-            id="sel-btn-${line.id}" ${exclu ? 'disabled style="opacity:.4;cursor:default"' : ''}>
+            id="sel-btn-${line.id}" title="${baseTitleEsc}" ${exclu ? 'disabled style="opacity:.4;cursor:default"' : ''}>
       <span class="sel-text">${esc(selText)}</span>
       <span class="sel-icon">▾</span>
     </button>
@@ -220,21 +376,28 @@ function renderRow(line, chap_lot) {
     btn.addEventListener('click', () => openModal(line.id, lot, desig));
   }
 
+  attachPuWpEditor(tr);
+
   return tr;
 }
 
 function buildWpCell(line) {
-  if (!line.weighted_price) {
-    return `<td class="col-pu-wp pu-wp-cell"><span class="pu-wp-val" style="color:#555">—</span></td>`;
-  }
-  const conf  = (line.wp_tooltip && line.wp_tooltip.confidence) || 'NONE';
-  const tt    = line.wp_tooltip || {};
-  const baseAge  = tt.base_age_years  != null ? tt.base_age_years.toFixed(1) + 'a'  : '?';
-  const devAge   = tt.devis_age_years != null ? tt.devis_age_years.toFixed(1) + 'a' : '?';
-  const baseW    = tt.base_weight  != null ? tt.base_weight.toFixed(2)  : '?';
-  const devW     = tt.devis_weight != null ? tt.devis_weight.toFixed(2) : '?';
-  const baseAct  = tt.base_actualized  != null ? fmt(tt.base_actualized)  : '—';
+  const excluded = line.mapping_status === 'excluded';
+  const hasWp = line.weighted_price != null && line.weighted_price === line.weighted_price;
+  const wpManual = !!line.wp_manual;
+  const manualCls = wpManual ? ' pu-wp-cell-manual' : '';
+  const conf = (line.wp_tooltip && line.wp_tooltip.confidence) || 'NONE';
+  const tt = line.wp_tooltip || {};
+  const baseAge = tt.base_age_years != null ? tt.base_age_years.toFixed(1) + 'a' : '?';
+  const devAge = tt.devis_age_years != null ? tt.devis_age_years.toFixed(1) + 'a' : '?';
+  const baseW = tt.base_weight != null ? tt.base_weight.toFixed(2) : '?';
+  const devW = tt.devis_weight != null ? tt.devis_weight.toFixed(2) : '?';
+  const baseAct = tt.base_actualized != null ? fmt(tt.base_actualized) : '—';
   const devisAct = tt.devis_actualized != null ? fmt(tt.devis_actualized) : '—';
+  const computedRow =
+    tt.computed_weighted_price != null && tt.computed_weighted_price === tt.computed_weighted_price
+      ? `<tr><td class="t-label">Calcul auto</td><td class="t-val">${fmt(tt.computed_weighted_price)} €</td></tr>`
+      : '';
 
   const tooltipHtml = `
     <div class="mv-tooltip">
@@ -243,6 +406,7 @@ function buildWpCell(line) {
             <td class="t-val">${baseAct} € <span style="color:#888">(âge ${baseAge} · P=${baseW})</span></td></tr>
         <tr><td class="t-label">Devis actualisé</td>
             <td class="t-val">${devisAct} € <span style="color:#888">(âge ${devAge} · P=${devW})</span></td></tr>
+        ${computedRow}
         <tr><td class="t-label t-result">Prix pondéré</td>
             <td class="t-val t-result">${fmt(line.weighted_price)} €</td></tr>
         <tr><td colspan="2" style="color:#666;font-size:10px;padding-top:4px">
@@ -252,11 +416,26 @@ function buildWpCell(line) {
       </table>
     </div>`;
 
-  return `<td class="col-pu-wp pu-wp-cell">
-    <span class="pu-wp-val has-data">
+  if (!hasWp) {
+    return `<td class="col-pu-wp pu-wp-cell${manualCls}" data-line-id="${line.id}" data-wp-manual="0">
+      <span class="pu-wp-val" style="color:#555">—</span></td>`;
+  }
+
+  if (excluded) {
+    return `<td class="col-pu-wp pu-wp-cell${manualCls}" data-line-id="${line.id}" data-wp-manual="${wpManual ? '1' : '0'}" data-stable-wp="${line.weighted_price}">
+      <span class="pu-wp-val has-data">
+        <span class="conf-dot conf-${conf}"></span>
+        ${fmt(line.weighted_price)}
+      </span>
+      ${tooltipHtml}
+    </td>`;
+  }
+
+  return `<td class="col-pu-wp pu-wp-cell${manualCls}" data-line-id="${line.id}" data-wp-manual="${wpManual ? '1' : '0'}" data-stable-wp="${line.weighted_price}">
+    <div class="pu-wp-input-row">
       <span class="conf-dot conf-${conf}"></span>
-      ${fmt(line.weighted_price)}
-    </span>
+      <input type="text" class="pu-wp-input" value="${fmtForPuInput(line.weighted_price)}" inputmode="decimal" aria-label="PU calculé" />
+    </div>
     ${tooltipHtml}
   </td>`;
 }
@@ -287,6 +466,14 @@ async function toggleExclude(lineId) {
 
     const selBtn = document.getElementById(`sel-btn-${lineId}`);
     if (selBtn) { selBtn.disabled = exclu; selBtn.style.opacity = exclu ? '.4' : ''; }
+
+    const line = findLineById(lineId);
+    if (line) line.mapping_status = d.new_status;
+    const wpTd = tr.querySelector('.col-pu-wp');
+    if (line && wpTd) {
+      wpTd.outerHTML = buildWpCell(line);
+      attachPuWpEditor(tr);
+    }
 
     // Recalcul ratio section
     refreshSectionRatios();
@@ -344,6 +531,14 @@ async function openModal(lineId, lot, rawDesig) {
   // Remplir infos ligne
   document.getElementById('modal-raw-desig').textContent = rawDesig;
 
+  const trailEl = document.getElementById('modal-base-breadcrumb');
+  if (trailEl) {
+    const rowLine0 = findLineById(lineId);
+    const t0 = formatBaseBreadcrumb(rowLine0, null, null);
+    trailEl.textContent = t0;
+    trailEl.setAttribute('title', t0);
+  }
+
   // Badge lot
   document.getElementById('modal-lot-badge').outerHTML =
     `<span class="lot-badge lot-${lot}" id="modal-lot-badge">${lot}</span>`;
@@ -365,6 +560,13 @@ async function openModal(lineId, lot, rawDesig) {
     _allCandidates = d.candidates || [];
     _modalLineInfo = d.line || null;
 
+    if (trailEl) {
+      const top = (_allCandidates && _allCandidates.length) ? _allCandidates[0] : null;
+      const t1 = formatBaseBreadcrumb(findLineById(lineId), _modalLineInfo, top);
+      trailEl.textContent = t1;
+      trailEl.setAttribute('title', t1);
+    }
+
     // Affiche chemin devis
     const pathEl = document.getElementById('modal-devis-path');
     if (pathEl) {
@@ -372,11 +574,16 @@ async function openModal(lineId, lot, rawDesig) {
       pathEl.textContent = rawPath ? rawPath.replace(/\s>\s/g, ' ➔ ') : '—';
     }
 
-    // Afficher désignation nettoyée si différente
+    // Désignation nettoyée (matching) — toujours affichée si non vide, même si identique au brut
     const cleanEl = document.getElementById('modal-clean-desig');
-    const cleaned = d.cleaned_designation || '';
-    cleanEl.style.display = cleaned && cleaned !== rawDesig ? 'block' : 'none';
-    cleanEl.textContent = cleaned ? `→ nettoyé : "${cleaned}"` : '';
+    const cleaned = (d.cleaned_designation || '').trim();
+    if (cleaned) {
+      cleanEl.style.display = 'block';
+      cleanEl.textContent = `→ nettoyé : "${cleaned}"`;
+    } else {
+      cleanEl.style.display = 'none';
+      cleanEl.textContent = '';
+    }
 
     renderCandidates(_allCandidates);
   } catch (e) {
@@ -775,11 +982,29 @@ function updateRowAfterSelect(lineId, d) {
   const tr = document.getElementById(`row-${lineId}`);
   if (!tr) return;
 
+  const line = findLineById(lineId);
+  if (line) {
+    line.weighted_price = d.weighted_price;
+    line.wp_tooltip = d.wp_tooltip;
+    line.ecart_pct = d.ecart_pct;
+    line.wp_manual = !!d.wp_manual;
+    if (d.base_designation) {
+      line.base_designation = d.base_designation;
+      line.base_pu = d.base_pu;
+    }
+    if (d.base_chapter !== undefined) line.base_chapter = d.base_chapter;
+    if (d.base_section !== undefined) line.base_section = d.base_section;
+  }
+
   // Sélecteur base
   const selBtn = document.getElementById(`sel-btn-${lineId}`);
   if (selBtn && d.base_designation) {
     selBtn.classList.add('mapped');
-    selBtn.querySelector('.sel-text').textContent = trunc(d.base_designation, 28);
+    const full = d.base_designation;
+    selBtn.title = full;
+    const tdBase = selBtn.closest('td.col-base');
+    if (tdBase) tdBase.title = full;
+    selBtn.querySelector('.sel-text').textContent = d.base_designation || '';
   }
 
   // PU base
@@ -789,8 +1014,19 @@ function updateRowAfterSelect(lineId, d) {
   // PU calculé
   const wpCell = tr.querySelector('.col-pu-wp');
   if (wpCell) {
-    const fakeLine = { weighted_price: d.weighted_price, wp_tooltip: d.wp_tooltip, ecart_pct: d.ecart_pct };
+    const ms = tr.classList.contains('mv-excluded')
+      ? 'excluded'
+      : (line && line.mapping_status) || 'manual';
+    const fakeLine = {
+      id: lineId,
+      weighted_price: d.weighted_price,
+      wp_tooltip: d.wp_tooltip,
+      ecart_pct: d.ecart_pct,
+      wp_manual: !!d.wp_manual,
+      mapping_status: ms,
+    };
     wpCell.outerHTML = buildWpCell(fakeLine);
+    attachPuWpEditor(tr);
   }
 
   // Écart

@@ -1,5 +1,7 @@
 {% extends 'base.html' %}
-{% block title %}Revue Matching{% endblock %}
+{% block title %}Revue matching{% endblock %}
+{% block page_subtitle %}Revue matching{% endblock %}
+{% block body_class %} matching-page{% endblock %}
 
 {% block head %}
 <style>
@@ -105,11 +107,33 @@ table.mv-table {
   padding:5px 8px; border-bottom:1px solid rgba(255,255,255,.04);
   vertical-align:middle; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
+.mv-table td.col-desig,
+.mv-table td.col-base {
+  vertical-align: top;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+.mv-table td.col-desig .cell-desig-text {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.38;
+}
+table.mv-table .btn-selector .sel-text {
+  white-space: pre-wrap;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-word;
+  line-height: 1.35;
+  min-width: 0;
+}
 .mv-table tr:nth-child(even) td { background:var(--mv-row-alt); }
 .mv-table tr:hover td { background:rgba(255,255,255,.05) !important; }
 
 /* Widths */
-.col-desig   { width:220px; }
+.col-desig   { width: 34%; min-width: 220px; max-width: 420px; }
 .col-unit    { width:46px; text-align:center; }
 .col-qty     { width:60px; text-align:right; }
 .col-pu-dev  { width:80px; text-align:right; }
@@ -145,6 +169,10 @@ tr.mv-excluded .col-tot-dev { color:#5a5a5a !important; }
 .status-excluded { background:rgba(100,100,100,.2); color:#777; }
 
 /* ─── Sélecteur base ─────────────────────────────────────────────────────── */
+.mv-table .btn-selector {
+  align-items: flex-start;
+  min-height: auto;
+}
 .btn-selector {
   display:flex; align-items:center; gap:6px; width:100%;
   background:none; border:1px solid rgba(255,255,255,.1); border-radius:4px;
@@ -168,6 +196,22 @@ tr.mv-excluded .col-tot-dev { color:#5a5a5a !important; }
 
 /* ─── PU calculé + tooltip ───────────────────────────────────────────────── */
 .pu-wp-cell { position:relative; }
+.pu-wp-input-row {
+  display:inline-flex; align-items:center; gap:4px; justify-content:flex-end;
+  width:100%;
+}
+.pu-wp-input {
+  width: 76px; text-align:right; font-size:12px; box-sizing:border-box;
+  background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.12);
+  border-radius: 4px; color: #eee; padding: 2px 6px;
+}
+.pu-wp-input:focus {
+  outline: none; border-color: var(--accent2);
+}
+.pu-wp-cell-manual .pu-wp-input {
+  background: rgba(245,166,35,.12);
+  border-color: rgba(245,166,35,.45);
+}
 .pu-wp-val  { display:inline-flex; align-items:center; gap:4px; cursor:default; }
 .pu-wp-val.has-data { border-bottom:1px dashed rgba(255,255,255,.25); }
 .conf-dot {
@@ -234,6 +278,10 @@ tr.mv-excluded .col-tot-dev { color:#5a5a5a !important; }
 .modal-line-info .info-label { color:#888; font-size:11px; margin-bottom:2px; }
 .modal-line-info .info-desig { color:#ddd; font-weight:600; margin-bottom:6px; }
 .modal-line-info .info-clean { color:var(--accent2); font-size:11px; }
+.modal-line-info .info-base-trail {
+  color:#c8e0ea; font-size:12px; font-weight:600; line-height:1.4;
+  word-break:break-word; margin-bottom:10px;
+}
 
 .modal-search-wrap { position:relative; }
 .modal-search {
@@ -403,6 +451,8 @@ tr.mv-excluded .col-tot-dev { color:#5a5a5a !important; }
     </div>
     <div class="mv-modal-body">
       <div class="modal-line-info">
+        <div class="info-label">Article base (DPGF : chapitre | section | désignation)</div>
+        <div class="info-base-trail" id="modal-base-breadcrumb" title="">—</div>
         <div class="info-label">Désignation devis (brute)</div>
         <div class="info-desig" id="modal-raw-desig">—</div>
         <div class="info-clean" id="modal-clean-desig"></div>

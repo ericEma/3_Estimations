@@ -30,6 +30,11 @@ let tauxIncertitude    = window.AFFAIRE_INCERTITUDE  ?? 3;
 let tauxRisque         = window.AFFAIRE_RISQUE       ?? 1;
 let complexity         = Object.assign({ cfo: 1, cfa: 1, pv: 1 },
                                        window.AFFAIRE_COMPLEXITY || {});
+if (typeof snapComplexityCoef === 'function') {
+    complexity.cfo = snapComplexityCoef(complexity.cfo);
+    complexity.cfa = snapComplexityCoef(complexity.cfa);
+    complexity.pv  = snapComplexityCoef(complexity.pv);
+}
 let currentTotal       = 0;   // total HT effectif (ratio fallback inclus) — envoyé à la sauvegarde
 
 // Paliers Egis : le choix de phase PRESET le Taux Phase (éditable ensuite)
@@ -519,20 +524,14 @@ function initParamsListeners() {
         scheduleParamsSave();
     });
 
-    // Sliders de complexité par lot → auto-save + recalcul instantané des PU
-    ['cfo', 'cfa', 'pv'].forEach(lot => {
-        const slider = document.getElementById(`cplx-${lot}`);
-        const label  = document.getElementById(`label-cplx-${lot}`);
-        if (!slider) return;
-        slider.addEventListener('input', e => {
-            const val = parseFloat(e.target.value) || 1;
-            complexity[lot] = val;
-            if (label) label.textContent = `×${val.toFixed(2)}`;
+    if (typeof initCalculateurComplexitySliders === 'function') {
+        initCalculateurComplexitySliders((lot, coef) => {
+            complexity[lot] = coef;
             clearTimeout(sdoDebounceTimer);
             sdoDebounceTimer = setTimeout(recalculateRatios, 350);
             scheduleParamsSave();
         });
-    });
+    }
 }
 
 function updateProvisions(totalHT) {

@@ -1358,6 +1358,22 @@ tr.row-sec:hover .add-sec-btn { display:inline-flex; }
 .sec-del-btn:hover { background:rgba(255,107,107,.15); color:#ff6b6b; }
 tr.row-sec:hover .sec-del-btn { display:inline-flex; }
 
+/* Boutons déplacement section bibliothèque */
+.bibl-sec-move-btn {
+  display:none; align-items:center; justify-content:center;
+  margin-left:4px; padding:2px 6px;
+  font-size:10px; line-height:1;
+  border:1px solid var(--border); border-radius:3px;
+  background:var(--bg3); color:var(--text-muted);
+  cursor:pointer;
+}
+.bibl-sec-move-btn:hover {
+  background:var(--accent-b);
+  color:#001a1e;
+  border-color:var(--accent-b);
+}
+tr.row-sec:hover .bibl-sec-move-btn { display:inline-flex; }
+
 /* Bouton dupliquer */
 .dup-btn {
   display:none; align-items:center; justify-content:center;
@@ -1533,6 +1549,102 @@ body.estim-page .row-sec.sec-excluded .sec-label,
 body.estim-page .row-sec.sec-excluded .sec-count {
   opacity: 0.55;
 }
+body.estim-page tr.row-sec-macro .sec-macro-unit {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+body.estim-page tr.row-sec-macro .estim-sec-macro-inp {
+  width: 100%;
+  max-width: 96px;
+}
+body.estim-page tr.row-sec-macro .sec-macro-total {
+  font-weight: 700;
+}
+
+/* Désignations éditables — rendu proche du texte catalogue (pas le cadre des montants) */
+body.estim-page .estim-desig-edit {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-sub);
+  font-family: inherit;
+  padding: 0 2px;
+  margin: 0;
+  min-width: 4em;
+  max-width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  box-shadow: none;
+}
+body.estim-page .sec-cell .estim-desig-edit.sec-desig-edit {
+  font-size: 11.5px;
+  font-weight: 600;
+  flex: 1;
+  min-width: 120px;
+  max-width: min(360px, 55vw);
+}
+body.estim-page .sec-cell .estim-desig-edit.sec-desig-edit:hover {
+  color: var(--accent-b);
+  text-decoration: underline dotted;
+}
+body.estim-page .art-desig-cell .estim-desig-edit.art-desig-edit {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
+  width: 100%;
+  display: block;
+}
+body.estim-page .estim-desig-edit:focus {
+  outline: none;
+  border-bottom: 1px dashed var(--accent-b);
+  background: rgba(36, 169, 181, 0.06);
+}
+body.estim-page .estim-move-btn {
+  display: none;
+  margin-left: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  line-height: 1;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg3);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+body.estim-page .estim-move-btn:hover {
+  background: var(--accent-b);
+  color: #001a1e;
+  border-color: var(--accent-b);
+}
+body.estim-page .estim-promote-btn {
+  display: none;
+  margin-left: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1;
+  border: 1px solid var(--accent2);
+  border-radius: 3px;
+  background: rgba(36, 169, 181, 0.15);
+  color: var(--accent2);
+  cursor: pointer;
+}
+body.estim-page .estim-promote-btn:hover {
+  background: var(--accent2);
+  color: #001a1e;
+}
+body.estim-page tr.row-sec:hover .estim-move-btn,
+body.estim-page tr.row-sec:hover .estim-promote-btn,
+body.estim-page tr.row-sec:hover .add-row-btn,
+body.estim-page tr.row-sec:hover .add-sec-btn,
+body.estim-page tr.row-sec:hover .sec-del-btn,
+body.estim-page tr.row-art:hover .estim-move-btn,
+body.estim-page tr.row-art:hover .estim-promote-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 body.estim-page .row-sec.sec-excluded {
   opacity: 0.92;
 }
@@ -1569,4 +1681,297 @@ body.estim-page .estim-phase-lbl {
   color: var(--num-total);
   min-width: 54px;
   font-family: 'IBM Plex Mono', monospace;
+}
+
+/* ================================================================
+   App Explorer — layout commun (base.html, style bibliothèque)
+   ================================================================ */
+
+body.app-explorer {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12.5px;
+}
+
+body.app-explorer .page-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+body.app-explorer .page-panel {
+  padding: 16px 18px;
+  flex: 1;
+  min-height: 0;
+}
+
+body.app-explorer .page-panel-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 4px;
+}
+
+body.app-explorer .page-panel-desc,
+body.app-explorer .page-panel-hd p {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+body.app-explorer .header-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--grid-line-strong, var(--border-light));
+}
+
+body.app-explorer .header-toolbar.topbar-legacy {
+  /* calculateur : barre d'outils dense */
+  min-height: 44px;
+}
+
+body.app-explorer .header-toolbar .topbar-title {
+  color: var(--text);
+  font-size: 13px;
+}
+
+/* Sidebar — menu unifié */
+.app-sidebar .sb-nav-toggle {
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
+}
+
+.app-sidebar .sb-chevron {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.app-sidebar .sb-nav-text-col {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.25;
+}
+
+.app-sidebar .sb-nav-sub {
+  font-size: 9.5px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.app-sidebar .sb-affaires-list {
+  padding: 0 0 4px;
+}
+
+.app-sidebar .sb-affaires-list[hidden] {
+  display: none;
+}
+
+.app-sidebar .sb-empty-hint {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  padding: 4px 12px 8px 18px;
+}
+
+/* Dashboard — cartes style explorer (sans jaune) */
+.affaires-grid-explorer {
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.affaire-card-explorer {
+  border: 1px solid var(--grid-line-strong, var(--border-light));
+  border-radius: 8px;
+  background: var(--bg2);
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+
+.affaire-card-explorer::before {
+  display: none;
+}
+
+.affaire-card-explorer:hover {
+  border-color: var(--accent-b, var(--accent2));
+  background: var(--bg3);
+  transform: none;
+  box-shadow: none;
+}
+
+.affaire-card-explorer .affaire-card-total {
+  color: var(--num-total, var(--text));
+  font-size: 18px;
+}
+
+.affaire-card-muted {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.affaire-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.affaire-card-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.affaire-card-lots {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lot-tag {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.lot-tag.cfo { color: var(--accent-y, var(--accent)); }
+.lot-tag.cfa { color: var(--accent-b, var(--accent2)); }
+.lot-tag.pv  { color: var(--accent-bo, var(--orange)); }
+
+.affaire-card-new {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+  border: 1px dashed var(--border);
+  text-decoration: none;
+  color: var(--text-muted);
+}
+
+.affaire-card-new:hover {
+  border-color: var(--accent-b, var(--accent2));
+  color: var(--accent-b, var(--accent2));
+}
+
+.affaire-card-new-icon {
+  font-size: 28px;
+  font-weight: 300;
+  line-height: 1;
+  margin-bottom: 8px;
+}
+
+.affaire-card-new-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.empty-state-explorer .empty-icon {
+  font-size: 40px;
+  opacity: .5;
+}
+
+.stats-placeholder {
+  margin-top: 24px;
+  padding: 40px 24px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--text-sub, var(--text2));
+}
+
+.stats-placeholder-icon {
+  font-size: 36px;
+  margin-bottom: 12px;
+  opacity: .6;
+}
+
+.stats-placeholder-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+
+/* Boutons : CTA discrets (pas de jaune massif sur explorer) */
+body.app-explorer .btn-primary {
+  background: var(--bg3);
+  color: var(--text);
+  border-color: var(--border);
+  font-weight: 600;
+}
+
+body.app-explorer .btn-primary:hover {
+  background: var(--accent-b, var(--accent2));
+  color: #001a1e;
+  border-color: var(--accent-b, var(--accent2));
+}
+
+body.app-explorer .btn-outlined {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-sub, var(--text2));
+  font-size: 11.5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+body.app-explorer .btn-outlined:hover {
+  border-color: var(--accent-b, var(--accent2));
+  color: var(--accent-b, var(--accent2));
+}
+
+/* Bibliothèque via base : statusbar en bas du #root */
+body.app-explorer.bibl-content-page #root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+body.app-explorer.bibl-content-page .app-shell {
+  flex: 1;
+  min-height: 0;
+}
+
+body.app-explorer.bibl-content-page .page-body {
+  overflow: hidden;
+  padding: 0;
+}
+
+body.app-explorer.bibl-content-page .main {
+  min-height: 0;
+}
+
+body.app-explorer.matching-page .page-body {
+  overflow: hidden;
+  padding: 0;
+}
+
+body.app-explorer.matching-page .mv-page {
+  height: 100%;
+  min-height: 0;
+}
+
+.form-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 900px) {
+  .form-grid-3 { grid-template-columns: 1fr; }
 }

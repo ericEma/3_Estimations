@@ -13,6 +13,31 @@ from datetime import date, datetime
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(PROJECT_DIR, "estimation_elec.db")
 
+# Type de système PV — coef relatif sur le lot (fiche affaire / estimation prévisionnelle)
+PV_SYSTEM_TYPES = {
+    'toiture':  {'label': 'Toiture surimposée', 'hint': 'Ratio de référence', 'coef': 1.0},
+    'ib':       {'label': "Intégration au bâti (IB)", 'hint': '+ coût structure/étanchéité', 'coef': 1.3},
+    'ombriere': {'label': 'Ombrière', 'hint': 'Structure métallique incluse', 'coef': 1.55},
+}
+
+
+def normalize_pv_system_type(value) -> str:
+    v = (str(value or 'toiture')).strip().lower()
+    return v if v in PV_SYSTEM_TYPES else 'toiture'
+
+
+def pv_system_coef(value) -> float:
+    return PV_SYSTEM_TYPES[normalize_pv_system_type(value)]['coef']
+
+
+def optional_positive_float(value):
+    """Retourne un float strictement positif, sinon NULL côté SQLite."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -214,6 +239,68 @@ def delete_bibliotheque_section(
     }
 
 
+def move_bibliotheque_section(
+    conn: sqlite3.Connection, chapter: str, section: str, direction: str
+) -> dict:
+    """Déplace un sous-chapitre complet dans la bibliothèque via ``row_order``."""
+    chap = (chapter or "").strip()
+    sec = (section or "").strip()
+    direction = (direction or "down").strip().lower()
+    if direction not in ("up", "down"):
+        direction = "down"
+    if not chap or not sec:
+        raise ValueError("section_move : chapter et section non vides requis")
+
+    section_rows = conn.execute(
+        """
+        SELECT section, MIN(row_order) AS section_order, MIN(id) AS first_id
+        FROM dpgf_articles
+        WHERE chapter = ? AND row_type = 'article'
+          AND (is_hidden IS NULL OR is_hidden = 0)
+        GROUP BY section
+        ORDER BY section_order, section, first_id
+        """,
+        (chap,),
+    ).fetchall()
+    if not section_rows:
+        return {"chapter": chap, "section": sec, "moved": False}
+
+    grouped: list[dict] = []
+    for row in section_rows:
+        row_sec = row["section"] or ""
+        articles = conn.execute(
+            """
+            SELECT id
+            FROM dpgf_articles
+            WHERE chapter = ? AND section = ? AND row_type = 'article'
+              AND (is_hidden IS NULL OR is_hidden = 0)
+            ORDER BY row_order, id
+            """,
+            (chap, row_sec),
+        ).fetchall()
+        grouped.append({"section": row_sec, "ids": [int(a["id"]) for a in articles]})
+
+    idx = next((i for i, g in enumerate(grouped) if g["section"] == sec), None)
+    if idx is None:
+        raise ValueError("Section introuvable")
+    swap_idx = idx - 1 if direction == "up" else idx + 1
+    if swap_idx < 0 or swap_idx >= len(grouped):
+        return {"chapter": chap, "section": sec, "moved": False}
+
+    grouped[idx], grouped[swap_idx] = grouped[swap_idx], grouped[idx]
+
+    order_value = 10
+    for group in grouped:
+        for art_id in group["ids"]:
+            conn.execute(
+                "UPDATE dpgf_articles SET row_order = ? WHERE id = ?",
+                (order_value, art_id),
+            )
+            order_value += 10
+
+    return {"chapter": chap, "section": sec, "moved": True}
+
+
 _V_RATIOS_SQL = """
 CREATE VIEW IF NOT EXISTS v_ratios AS
 SELECT
@@ -339,6 +426,9 @@ def ensure_app_tables():
                 coef_complexity_cfo REAL NOT NULL DEFAULT 1.0,
                 coef_complexity_cfa REAL NOT NULL DEFAULT 1.0,
                 coef_complexity_pv  REAL NOT NULL DEFAULT 1.0,
+                ratio_global_cfo_m2 REAL,
+                ratio_global_cfa_m2 REAL,
+                ratio_global_pv_kwc REAL,
                 coef_risque         REAL NOT NULL DEFAULT 0.0,
                 taux_marge          REAL NOT NULL DEFAULT 0.0,
                 statut              TEXT NOT NULL DEFAULT 'brouillon'
@@ -433,6 +523,23 @@ def ensure_app_tables():
             "ALTER TABLE dpgf_articles ADD COLUMN last_updated DATE",
             # Lot 1 — colonne lot sur dpgf_articles (CFO/CFA/PV déduit du chapitre)
             "ALTER TABLE dpgf_articles ADD COLUMN lot TEXT",
+            # Revue Matching — PU calculé (pondéré) forcé par l'utilisateur
+            "ALTER TABLE devis_lines ADD COLUMN weighted_price_override REAL",
+            # Puissance PV (kWc) — diviseur ratios chapitre PV ; kva_cible = TGBT kVA
+            "ALTER TABLE affaires ADD COLUMN puissance_pv_kwc REAL DEFAULT 100.0",
+            # Type de système PV (toiture / IB / ombrière) — coef relatif sur le lot PV
+            "ALTER TABLE affaires ADD COLUMN pv_system_type TEXT DEFAULT 'toiture'",
+            # Sprint 10 — snapshot estimation à la création d'affaire
+            "ALTER TABLE affaires ADD COLUMN estimation_initialized_at DATETIME",
+            # Sprint 11 — layout estimation (sections locales, ordre)
+            "ALTER TABLE affaire_lines ADD COLUMN line_chapter TEXT",
+            "ALTER TABLE affaire_lines ADD COLUMN line_section TEXT",
+            "ALTER TABLE affaire_lines ADD COLUMN sort_order REAL",
+            "ALTER TABLE affaire_chapter_settings ADD COLUMN is_local INTEGER NOT NULL DEFAULT 0",
+            # Sprint 5 — ratios globaux éditables sur la fiche affaire
+            "ALTER TABLE affaires ADD COLUMN ratio_global_cfo_m2 REAL",
+            "ALTER TABLE affaires ADD COLUMN ratio_global_cfa_m2 REAL",
+            "ALTER TABLE affaires ADD COLUMN ratio_global_pv_kwc REAL",
         ]
         for sql in _migrations:
             try:
@@ -440,6 +547,22 @@ def ensure_app_tables():
                 conn.commit()
             except sqlite3.OperationalError:
                 pass  # colonne déjà présente
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS affaire_estimation_section_sort (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                affaire_id  INTEGER NOT NULL REFERENCES affaires(id) ON DELETE CASCADE,
+                chapter     TEXT NOT NULL,
+                section     TEXT NOT NULL,
+                sort_order  INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(affaire_id, chapter, section)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_estim_sec_sort_affaire
+            ON affaire_estimation_section_sort(affaire_id)
+        """)
+        conn.commit()
 
         # ── Mise à jour de la liste building_categories (Sprint 8) ───────────
         _NEW_CATEGORIES = [
@@ -499,6 +622,46 @@ def save_total_estime(affaire_id: int, total: float):
         conn.close()
 
 
+COMPLEXITY_COEFS = (0.75, 0.9, 1.0, 1.25, 1.55)
+
+
+def snap_complexity_coef(value) -> float:
+    """Ramène un coefficient de complexité au palier Egis le plus proche."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return min(COMPLEXITY_COEFS, key=lambda c: abs(c - v))
+
+
+def get_base_price_last_updated() -> str | None:
+    """Date (JJ-MM-AAAA) de la dernière modification de prix en base DPGF."""
+    conn = get_db()
+    try:
+        row = conn.execute("""
+            SELECT MAX(dt) FROM (
+                SELECT MAX(last_updated) AS dt
+                FROM dpgf_articles
+                WHERE COALESCE(is_hidden, 0) = 0
+                  AND last_updated IS NOT NULL
+                UNION ALL
+                SELECT MAX(date(created_at)) AS dt
+                FROM ratio_overrides
+                WHERE created_at IS NOT NULL
+            )
+        """).fetchone()
+        raw = row[0] if row else None
+        if not raw:
+            return None
+        s = str(raw)[:10]
+        parts = s.split('-')
+        if len(parts) == 3:
+            return f"{parts[2]}-{parts[1]}-{parts[0]}"
+        return s
+    finally:
+        conn.close()
+
+
 def get_affaires() -> list:
     conn = get_db()
     try:
@@ -541,10 +704,12 @@ def create_affaire(data: dict) -> int:
             INSERT INTO affaires
               (name, client, adresse, surface_sdo, category_id,
                coef_complexity_cfo, coef_complexity_cfa, coef_complexity_pv,
+               ratio_global_cfo_m2, ratio_global_cfa_m2, ratio_global_pv_kwc,
                coef_risque, taux_marge,
-               kva_cible, phase_etude, taux_incertitude, taux_phase,
+               kva_cible, puissance_pv_kwc, pv_system_type,
+               phase_etude, taux_incertitude, taux_phase,
                notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data.get('name', 'Nouvelle Affaire'),
             data.get('client'),
@@ -554,16 +719,184 @@ def create_affaire(data: dict) -> int:
             float(data.get('coef_complexity_cfo', 1.0)),
             float(data.get('coef_complexity_cfa', 1.0)),
             float(data.get('coef_complexity_pv',  1.0)),
+            optional_positive_float(data.get('ratio_global_cfo_m2')),
+            optional_positive_float(data.get('ratio_global_cfa_m2')),
+            optional_positive_float(data.get('ratio_global_pv_kwc')),
             float(data.get('coef_risque', 1.0)),
             0.0,  # taux_marge conservé pour compat
             float(data.get('kva_cible', 800.0)),
+            float(data.get('puissance_pv_kwc', 100.0)),
+            normalize_pv_system_type(data.get('pv_system_type')),
             data.get('phase_etude', 'APD'),
             float(data.get('taux_incertitude', 3.0)),
             float(data.get('taux_phase',        3.0)),
             data.get('notes'),
         ))
         conn.commit()
-        return cur.lastrowid
+        affaire_id = cur.lastrowid
+        initialize_estimation_snapshot(affaire_id)
+        return affaire_id
+    finally:
+        conn.close()
+
+
+def _is_pv_chapter_name(chapter: str | None) -> bool:
+    c = (chapter or "").lower()
+    return "photov" in c
+
+
+def is_estimation_initialized(affaire_id: int) -> bool:
+    affaire = get_affaire(affaire_id)
+    return bool(affaire and affaire.get("estimation_initialized_at"))
+
+
+def _snapshot_pu_from_bibliotheque(
+    pu_ht_ref, dpgf_id: int, ratios_map: dict
+) -> float:
+    """PU affiché en bibliothèque nue : ``pu_ht_ref``, sinon repli ``compute_ratios`` si NULL.
+
+    Même règle que ``bibliotheque()`` dans app.py (pas de resync après snapshot).
+    """
+    if pu_ht_ref is not None:
+        return _round_money2(float(pu_ht_ref))
+    ent = ratios_map.get(dpgf_id) or ratios_map.get(str(dpgf_id))
+    if not ent:
+        return 0.0
+    up = float(ent.get("unit_price") or 0)
+    if up > 0:
+        return _round_money2(up)
+    ap = float(ent.get("avg_pu_actualise") or 0)
+    return _round_money2(ap) if ap > 0 else 0.0
+
+
+def initialize_estimation_snapshot(affaire_id: int) -> int:
+    """Copie la base de prix affichée en bibliothèque dans ``affaire_lines`` à la création.
+
+    - PU figés dans ``ratio_ref`` (+ ``unit_price_ht`` si > 0) — pas de resync ensuite.
+    - ``pu_ht_ref`` NULL → même repli que l'écran /bibliotheque (``compute_ratios``).
+    - Sections avec ratio manuel biblio → ``use_macro`` + ``ratio_m2_override``.
+    - Articles des sections macro : qty = 0 jusqu'à saisie détail.
+    """
+    affaire = get_affaire(affaire_id)
+    if not affaire:
+        return 0
+    if affaire.get("estimation_initialized_at"):
+        return 0
+
+    sdo = float(affaire.get("surface_sdo") or 1000)
+    kwc = float(affaire.get("puissance_pv_kwc") or 100)
+    ccfo = float(affaire.get("coef_complexity_cfo") or 1.0)
+    ccfa = float(affaire.get("coef_complexity_cfa") or 1.0)
+    cpv = float(affaire.get("coef_complexity_pv") or 1.0)
+
+    ratios_map: dict = {}
+    try:
+        from scripts.engine_ratios import compute_ratios
+
+        ratios_map = compute_ratios(sdo, ccfo, ccfa, cpv)
+    except Exception:
+        ratios_map = {}
+
+    conn = get_db()
+    try:
+        _verify_foreign_keys_enabled(conn)
+        articles = conn.execute(
+            """
+            SELECT id, chapter, section, unit, ratio_type, pu_ht_ref
+            FROM dpgf_articles
+            WHERE row_type = 'article'
+              AND (is_hidden IS NULL OR is_hidden = 0)
+            ORDER BY row_order, id
+            """
+        ).fetchall()
+
+        sec_ratio_rows = conn.execute(
+            "SELECT chapter, section, ratio_m2, ratio_unit FROM bibliotheque_section_ratios"
+        ).fetchall()
+        macro_keys = {f"{r['chapter']}|{r['section']}" for r in sec_ratio_rows}
+
+        inserted = 0
+        for art in articles:
+            chap = art["chapter"]
+            sec = art["section"]
+            sec_key = f"{chap}|{sec}"
+            pu = _snapshot_pu_from_bibliotheque(
+                art["pu_ht_ref"], int(art["id"]), ratios_map
+            )
+
+            if sec_key in macro_keys:
+                qty = 0.0
+            else:
+                qty = _default_estimation_quantity(dict(art), sdo, kwc)
+
+            total_ht = _round_money2(qty * pu) if qty > 0 and pu > 0 else 0.0
+            pu_snap = pu if pu > 0 else None
+            conn.execute(
+                """
+                INSERT INTO affaire_lines (
+                    affaire_id, dpgf_article_id, quantity, quantity_source,
+                    unit_price_ht, unit_price_source, total_ht, is_included,
+                    ratio_ref, deviation_pct
+                ) VALUES (?, ?, ?, 'ratio', ?, 'ratio', ?, 1, ?, 0)
+                """,
+                (affaire_id, int(art["id"]), qty, pu_snap, total_ht, pu),
+            )
+            inserted += 1
+
+        for chap_name in ESTIMATION_CHAPTER_DESIGNATIONS:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO affaire_chapter_settings
+                    (affaire_id, chapter_key, is_included, use_macro, qty)
+                VALUES (?, ?, 1, 0, 1.0)
+                """,
+                (affaire_id, f"chap:{chap_name}"),
+            )
+
+        for sr in sec_ratio_rows:
+            chap = sr["chapter"]
+            sec = sr["section"]
+            unit = (sr["ratio_unit"] or "m2").lower()
+            divisor = _round_money2(kwc if unit == "kwc" else sdo)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO affaire_chapter_settings
+                    (affaire_id, chapter_key, is_included, use_macro, qty, ratio_m2_override)
+                VALUES (?, ?, 1, 1, ?, ?)
+                """,
+                (
+                    affaire_id,
+                    f"sect:{chap}|{sec}",
+                    divisor,
+                    float(sr["ratio_m2"]),
+                ),
+            )
+
+        conn.execute(
+            """
+            UPDATE affaire_lines SET sort_order = (
+                SELECT da.row_order * 10.0 FROM dpgf_articles da
+                WHERE da.id = affaire_lines.dpgf_article_id
+            )
+            WHERE affaire_id = ? AND dpgf_article_id IS NOT NULL
+            """,
+            (affaire_id,),
+        )
+        from estimation_layout import init_section_sort_from_catalog
+
+        init_section_sort_from_catalog(conn, affaire_id)
+
+        conn.execute(
+            """
+            UPDATE affaires
+            SET estimation_initialized_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (affaire_id,),
+        )
+        conn.commit()
+        return inserted
     finally:
         conn.close()
 
@@ -581,8 +914,13 @@ def update_affaire(affaire_id: int, data: dict):
                 coef_complexity_cfo = ?,
                 coef_complexity_cfa = ?,
                 coef_complexity_pv  = ?,
+                ratio_global_cfo_m2 = ?,
+                ratio_global_cfa_m2 = ?,
+                ratio_global_pv_kwc = ?,
                 coef_risque         = ?,
                 kva_cible           = ?,
+                puissance_pv_kwc    = ?,
+                pv_system_type      = ?,
                 phase_etude         = ?,
                 taux_incertitude    = ?,
                 taux_phase          = ?,
@@ -599,8 +937,13 @@ def update_affaire(affaire_id: int, data: dict):
             float(data.get('coef_complexity_cfo', 1.0)),
             float(data.get('coef_complexity_cfa', 1.0)),
             float(data.get('coef_complexity_pv',  1.0)),
+            optional_positive_float(data.get('ratio_global_cfo_m2')),
+            optional_positive_float(data.get('ratio_global_cfa_m2')),
+            optional_positive_float(data.get('ratio_global_pv_kwc')),
             float(data.get('coef_risque', 1.0)),
             float(data.get('kva_cible', 800.0)),
+            float(data.get('puissance_pv_kwc', 100.0)),
+            normalize_pv_system_type(data.get('pv_system_type')),
             data.get('phase_etude', 'APD'),
             float(data.get('taux_incertitude', 3.0)),
             float(data.get('taux_phase',        3.0)),
@@ -620,7 +963,7 @@ def update_affaire_params(affaire_id: int, data: dict):
     taux_phase, taux_incertitude, coef_risque, coef_complexity_{cfo,cfa,pv}.
     """
     ALLOWED_FLOAT = {
-        'surface_sdo', 'kva_cible',
+        'surface_sdo', 'kva_cible', 'puissance_pv_kwc',
         'taux_phase', 'taux_incertitude', 'coef_risque',
         'coef_complexity_cfo', 'coef_complexity_cfa', 'coef_complexity_pv',
     }
@@ -636,6 +979,8 @@ def update_affaire_params(affaire_id: int, data: dict):
         v = data[f]
         if f in ALLOWED_STR:
             values.append(v if v not in ('', None) else None)
+        elif f.startswith('coef_complexity_'):
+            values.append(snap_complexity_coef(v))
         else:
             values.append(float(v))
     values.append(affaire_id)
@@ -727,7 +1072,19 @@ def save_affaire_lines(affaire_id: int, lines: list):
         conn.close()
 
 
-def _ref_pu_for_article_conn(conn: sqlite3.Connection, dpgf_id: int) -> float:
+def _ref_pu_for_article_conn(
+    conn: sqlite3.Connection, dpgf_id: int, affaire_id: int | None = None
+) -> float:
+    if affaire_id is not None:
+        snap = conn.execute(
+            """
+            SELECT ratio_ref FROM affaire_lines
+            WHERE affaire_id = ? AND dpgf_article_id = ?
+            """,
+            (affaire_id, dpgf_id),
+        ).fetchone()
+        if snap is not None and snap["ratio_ref"] is not None:
+            return _round_money2(float(snap["ratio_ref"]))
     r = conn.execute(
         """
         SELECT COALESCE(ro.pu_override, da.pu_ht_ref, 0)
@@ -740,8 +1097,8 @@ def _ref_pu_for_article_conn(conn: sqlite3.Connection, dpgf_id: int) -> float:
     return float(r[0] or 0) if r else 0.0
 
 
-def _default_estimation_quantity(row: dict, sdo: float, kva: float) -> float:
-    """Qté par défaut : SDO pour m² / surfacique ; kWc cible pour unités kWc (lot PV).
+def _default_estimation_quantity(row: dict, sdo: float, kwc: float) -> float:
+    """Qté par défaut : SDO pour m² / surfacique ; puissance_pv_kwc pour unités kWc (lot PV).
 
     Communications internes — En charge du lot électricité.
     """
@@ -750,61 +1107,78 @@ def _default_estimation_quantity(row: dict, sdo: float, kva: float) -> float:
     u = unit_raw.lower().replace("²", "2").replace(" ", "")
     rt = row.get("ratio_type") or ""
     if "kwc" in u:
-        return _round_money2(float(kva or 0))
+        return _round_money2(float(kwc or 0))
     if u in ("m2", "m²") or rt == "SURFACIQUE":
         return _round_money2(float(sdo or 0))
     return 0.0
 
 
 def get_estimation_catalog_rows(affaire_id: int) -> list:
-    """Snapshot catalogue : chaque article DPGF + ligne d'affaire éventuelle.
+    """Lignes catalogue pour la page Estimation.
 
-    PU référence : COALESCE(override, pu_ht_ref) puis repli ``compute_ratios`` si nul.
-    Sans ligne ``affaire_lines``, qté par défaut = SDO (surfacique / m²) ou kWc (PV).
-
-    Communications internes — En charge du lot électricité.
+    Affaire initialisée (snapshot création) : PU = ``affaire_lines.ratio_ref`` figé,
+    pas de resync ``pu_ht_ref`` ni ``compute_ratios()``.
+    Affaire legacy (non initialisée) : comportement historique live catalogue.
     """
     affaire = get_affaire(affaire_id)
     if not affaire:
         return []
     sdo = float(affaire.get("surface_sdo") or 0)
-    kva = float(affaire.get("kva_cible") or 0)
-    ccfo = float(affaire.get("coef_complexity_cfo") or 1.0)
-    ccfa = float(affaire.get("coef_complexity_cfa") or 1.0)
-    cpv = float(affaire.get("coef_complexity_pv") or 1.0)
+    kwc = float(affaire.get("puissance_pv_kwc") or 0)
+    initialized = bool(affaire.get("estimation_initialized_at"))
 
-    try:
-        from scripts.engine_ratios import compute_ratios
+    ratios_map = {}
+    if not initialized:
+        ccfo = float(affaire.get("coef_complexity_cfo") or 1.0)
+        ccfa = float(affaire.get("coef_complexity_cfa") or 1.0)
+        cpv = float(affaire.get("coef_complexity_pv") or 1.0)
+        try:
+            from scripts.engine_ratios import compute_ratios
 
-        ratios_map = compute_ratios(sdo, ccfo, ccfa, cpv)
-    except Exception:
-        ratios_map = {}
+            ratios_map = compute_ratios(sdo, ccfo, ccfa, cpv)
+        except Exception:
+            ratios_map = {}
 
     conn = get_db()
     try:
-        rows = conn.execute(
+        if initialized:
+            sql = """
+                SELECT da.id AS dpgf_id, da.chapter, da.section,
+                       COALESCE(NULLIF(TRIM(al.line_designation), ''), da.designation) AS designation,
+                       da.unit,
+                       da.ratio_type, da.row_order,
+                       al.ratio_ref AS ref_pu_ht,
+                       al.id AS line_id, al.quantity, al.unit_price_ht, al.total_ht,
+                       al.sort_order
+                FROM affaire_lines al
+                INNER JOIN dpgf_articles da ON da.id = al.dpgf_article_id
+                WHERE al.affaire_id = ?
+                  AND da.row_type = 'article'
+                  AND (da.is_hidden IS NULL OR da.is_hidden = 0)
             """
-            SELECT da.id AS dpgf_id, da.chapter, da.section, da.designation, da.unit,
-                   da.ratio_type, da.row_order,
-                   COALESCE(ro.pu_override, da.pu_ht_ref) AS ref_pu_ht,
-                   al.id AS line_id, al.quantity, al.unit_price_ht, al.total_ht
-            FROM dpgf_articles da
-            LEFT JOIN ratio_overrides ro ON ro.dpgf_article_id = da.id
-            LEFT JOIN affaire_lines al
-                ON al.dpgf_article_id = da.id AND al.affaire_id = ?
-            WHERE da.row_type = 'article'
-              AND (da.is_hidden IS NULL OR da.is_hidden = 0)
-            ORDER BY da.row_order
-            """,
-            (affaire_id,),
-        ).fetchall()
+        else:
+            sql = """
+                SELECT da.id AS dpgf_id, da.chapter, da.section,
+                       COALESCE(NULLIF(TRIM(al.line_designation), ''), da.designation) AS designation,
+                       da.unit,
+                       da.ratio_type, da.row_order,
+                       COALESCE(ro.pu_override, da.pu_ht_ref) AS ref_pu_ht,
+                       al.id AS line_id, al.quantity, al.unit_price_ht, al.total_ht
+                FROM dpgf_articles da
+                LEFT JOIN ratio_overrides ro ON ro.dpgf_article_id = da.id
+                LEFT JOIN affaire_lines al
+                    ON al.dpgf_article_id = da.id AND al.affaire_id = ?
+                WHERE da.row_type = 'article'
+                  AND (da.is_hidden IS NULL OR da.is_hidden = 0)
+                ORDER BY da.row_order
+            """
+        rows = conn.execute(sql, (affaire_id,)).fetchall()
         out = []
         for r in rows:
             d = dict(r)
             pid = int(d["dpgf_id"])
-            ref = d.get("ref_pu_ht")
-            ref_f = float(ref) if ref is not None else 0.0
-            if ref_f <= 0 and pid in ratios_map:
+            ref_f = float(d.get("ref_pu_ht") or 0)
+            if not initialized and ref_f <= 0 and pid in ratios_map:
                 ent = ratios_map[pid]
                 up = float(ent.get("unit_price") or 0)
                 ref_f = up if up > 0 else float(ent.get("avg_pu_actualise") or 0)
@@ -813,21 +1187,63 @@ def get_estimation_catalog_rows(affaire_id: int) -> list:
             lid = d.get("line_id")
             q = d.get("quantity")
             if lid is None:
-                d["quantity"] = _default_estimation_quantity(d, sdo, kva)
+                d["quantity"] = _default_estimation_quantity(d, sdo, kwc)
             elif q is None:
                 d["quantity"] = 0.0
             else:
                 d["quantity"] = _round_money2(float(q))
 
             d["lot"] = derive_lot_from_chapter(d.get("chapter"))
+            d["snapshot"] = initialized
+            d["is_tree_custom"] = False
             out.append(d)
+
+        tree_rows = conn.execute(
+            """
+            SELECT al.id AS line_id, al.line_chapter AS chapter, al.line_section AS section,
+                   al.line_designation AS designation, al.unit_override AS unit,
+                   al.ratio_ref AS ref_pu_ht, al.quantity, al.unit_price_ht, al.total_ht,
+                   al.sort_order, al.line_lot AS lot
+            FROM affaire_lines al
+            WHERE al.affaire_id = ? AND al.dpgf_article_id IS NULL
+              AND al.line_chapter IS NOT NULL AND TRIM(al.line_chapter) != ''
+            """,
+            (affaire_id,),
+        ).fetchall()
+        for r in tree_rows:
+            d = dict(r)
+            d["dpgf_id"] = None
+            d["ratio_type"] = "UNITAIRE"
+            d["row_order"] = int(float(d.get("sort_order") or 0))
+            d["ref_pu_ht"] = _round_money2(float(d.get("ref_pu_ht") or 0))
+            q = d.get("quantity")
+            d["quantity"] = _round_money2(float(q)) if q is not None else 0.0
+            if not d.get("lot"):
+                d["lot"] = derive_lot_from_chapter(d.get("chapter"))
+            d["snapshot"] = initialized
+            d["is_tree_custom"] = True
+            out.append(d)
+
+        from estimation_layout import _chap_index, get_section_sort_map
+
+        sec_sort = get_section_sort_map(conn, affaire_id)
+
+        def _sort_key(row: dict):
+            ch = row.get("chapter") or ""
+            sec = row.get("section") or ""
+            sk = f"{ch}|{sec}"
+            so = sec_sort.get(sk, _chap_index(ch) * 100000)
+            lo = float(row.get("sort_order") or row.get("row_order") or 0)
+            return (_chap_index(ch), so, lo)
+
+        out.sort(key=_sort_key)
         return out
     finally:
         conn.close()
 
 
 def get_estimation_custom_rows(affaire_id: int) -> list:
-    """Lignes sur-mesure (hors catalogue) pour une affaire."""
+    """Lignes hors catalogue (bloc dédié, sans chapitre/section arbre)."""
     conn = get_db()
     try:
         rows = conn.execute(
@@ -836,6 +1252,7 @@ def get_estimation_custom_rows(affaire_id: int) -> list:
                    quantity, unit_price_ht, total_ht
             FROM affaire_lines
             WHERE affaire_id = ? AND dpgf_article_id IS NULL
+              AND (line_chapter IS NULL OR TRIM(line_chapter) = '')
             ORDER BY id
             """,
             (affaire_id,),
@@ -883,16 +1300,51 @@ def get_estimation_chapter_state(affaire_id: int) -> list:
 def get_estimation_section_state(affaire_id: int) -> list:
     """Lignes ``sect:chapitre|section`` depuis ``affaire_chapter_settings`` (sous-chapitres catalogue)."""
     settings = get_chapter_settings(affaire_id)
-    out: list[dict] = []
-    for key, row in settings.items():
+    conn = get_db()
+    try:
+        sort_rows = conn.execute(
+            """
+            SELECT chapter, section, sort_order
+            FROM affaire_estimation_section_sort
+            WHERE affaire_id = ?
+            """,
+            (affaire_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    section_keys: dict[tuple[str, str], int] = {}
+    for row in sort_rows:
+        chap = row["chapter"]
+        sec = row["section"]
+        if chap and sec:
+            section_keys[(chap, sec)] = int(row["sort_order"] or 0)
+
+    for key in settings:
         if not isinstance(key, str) or not key.startswith("sect:"):
             continue
         rest = key[5:]
         if "|" not in rest:
             continue
         chap, sec = rest.split("|", 1)
+        section_keys.setdefault((chap, sec), 999999)
+
+    out: list[dict] = []
+    for (chap, sec), sort_order in sorted(
+        section_keys.items(),
+        key=lambda item: (
+            ESTIMATION_CHAPTER_DESIGNATIONS.index(item[0][0])
+            if item[0][0] in ESTIMATION_CHAPTER_DESIGNATIONS
+            else 99,
+            item[1],
+            item[0][1],
+        ),
+    ):
+        key = f"sect:{chap}|{sec}"
+        row = settings.get(key, {})
         inc = row.get("is_included")
         is_included = True if inc is None else bool(inc)
+        rmo = row.get("ratio_m2_override")
         out.append(
             {
                 "chapter": chap,
@@ -901,16 +1353,24 @@ def get_estimation_section_state(affaire_id: int) -> list:
                 "is_included": is_included,
                 "use_macro": bool(row.get("use_macro", 0)),
                 "qty": float(row.get("qty", 1.0) or 1.0),
+                "ratio_m2_override": float(rmo) if rmo is not None else None,
+                "is_local": bool(row.get("is_local", 0)),
+                "sort_order": int(sort_order),
             }
         )
     return out
 
 
 def batch_sync_estimation_m2_quantities(affaire_id: int, surface_sdo: float) -> int:
-    """Mise à jour groupée des quantités catalogue en m² = SDO projet (unité m² uniquement).
+    """Legacy : propage SDO sur les lignes catalogue en m² (affaires non initialisées).
 
-    ``quantity_source`` = ``ratio`` (hors énumération manuelle). Communications internes — En charge du lot électricité.
+    Affaires snapshot : délégué à ``sync_estimation_macro_divisors`` (diviseurs sections macro).
     """
+    affaire = get_affaire(affaire_id)
+    if affaire and affaire.get("estimation_initialized_at"):
+        kwc = float(affaire.get("puissance_pv_kwc") or 0)
+        return sync_estimation_macro_divisors(affaire_id, surface_sdo, kwc)
+
     qty = _round_money2(float(surface_sdo or 0))
     conn = get_db()
     try:
@@ -935,6 +1395,60 @@ def batch_sync_estimation_m2_quantities(affaire_id: int, surface_sdo: float) -> 
         conn.close()
 
 
+def sync_estimation_macro_divisors(
+    affaire_id: int, surface_sdo: float, puissance_pv_kwc: float
+) -> int:
+    """Met à jour ``qty`` des sections macro (sect:…) = SDO ou kWc selon le lot."""
+    sdo = _round_money2(float(surface_sdo or 0))
+    kwc = _round_money2(float(puissance_pv_kwc or 0))
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """
+            SELECT chapter_key FROM affaire_chapter_settings
+            WHERE affaire_id = ? AND chapter_key LIKE 'sect:%' AND use_macro = 1
+            """,
+            (affaire_id,),
+        ).fetchall()
+        n = 0
+        for row in rows:
+            key = row["chapter_key"]
+            rest = key[5:]
+            if "|" not in rest:
+                continue
+            chap, _sec = rest.split("|", 1)
+            divisor = kwc if _is_pv_chapter_name(chap) else sdo
+            conn.execute(
+                """
+                UPDATE affaire_chapter_settings
+                SET qty = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE affaire_id = ? AND chapter_key = ?
+                """,
+                (divisor, affaire_id, key),
+            )
+            n += 1
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+def _section_has_positive_qty_conn(
+    conn: sqlite3.Connection, affaire_id: int, chapter: str, section: str
+) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1 FROM affaire_lines al
+        INNER JOIN dpgf_articles da ON da.id = al.dpgf_article_id
+        WHERE al.affaire_id = ? AND da.chapter = ? AND da.section = ?
+          AND COALESCE(al.quantity, 0) > 0
+        LIMIT 1
+        """,
+        (affaire_id, chapter, section),
+    ).fetchone()
+    return row is not None
+
+
 def _round_money2(value) -> float:
     """Arrondi monétaire strict à 2 décimales (totaux estimation)."""
     return round(float(value or 0), 2)
@@ -952,6 +1466,12 @@ def _estimation_totals_rounded(totals: dict) -> dict:
 def _compute_estimation_kpis_conn(conn: sqlite3.Connection, affaire_id: int) -> dict:
     """Totaux HT par lot sur la connexion courante (données non encore commitées visibles)."""
     totals = {"CFO": 0.0, "CFA": 0.0, "PV": 0.0}
+    aff_row = conn.execute(
+        "SELECT estimation_initialized_at FROM affaires WHERE id = ?",
+        (affaire_id,),
+    ).fetchone()
+    initialized = bool(aff_row and aff_row["estimation_initialized_at"])
+
     chap_inc: dict[str, bool] = {}
     for r in conn.execute(
         """
@@ -964,15 +1484,17 @@ def _compute_estimation_kpis_conn(conn: sqlite3.Connection, affaire_id: int) -> 
         chap_inc[r["chapter_key"]] = bool(r["is_included"])
 
     sect_inc: dict[str, bool] = {}
+    sect_macro: dict[str, dict] = {}
     for r in conn.execute(
         """
-        SELECT chapter_key, is_included
+        SELECT chapter_key, is_included, use_macro, qty, ratio_m2_override
         FROM affaire_chapter_settings
         WHERE affaire_id = ? AND chapter_key LIKE 'sect:%'
         """,
         (affaire_id,),
     ).fetchall():
         sect_inc[r["chapter_key"]] = bool(r["is_included"])
+        sect_macro[r["chapter_key"]] = dict(r)
 
     def _chapter_included(chapter: str | None) -> bool:
         if not chapter:
@@ -990,32 +1512,73 @@ def _compute_estimation_kpis_conn(conn: sqlite3.Connection, affaire_id: int) -> 
             return True
         return sect_inc[k]
 
-    rows = conn.execute(
+    if initialized:
+        sql = """
+            SELECT da.chapter, da.section,
+                   COALESCE(al.ratio_ref, 0) AS ref_pu_ht,
+                   al.quantity, al.unit_price_ht
+            FROM affaire_lines al
+            INNER JOIN dpgf_articles da ON da.id = al.dpgf_article_id
+            WHERE al.affaire_id = ?
+              AND da.row_type = 'article'
+              AND (da.is_hidden IS NULL OR da.is_hidden = 0)
         """
-        SELECT da.chapter, da.section,
-               COALESCE(ro.pu_override, da.pu_ht_ref, 0) AS ref_pu_ht,
-               al.quantity, al.unit_price_ht
-        FROM dpgf_articles da
-        LEFT JOIN ratio_overrides ro ON ro.dpgf_article_id = da.id
-        LEFT JOIN affaire_lines al
-            ON al.dpgf_article_id = da.id AND al.affaire_id = ?
-        WHERE da.row_type = 'article'
-          AND (da.is_hidden IS NULL OR da.is_hidden = 0)
-        """,
-        (affaire_id,),
-    ).fetchall()
+    else:
+        sql = """
+            SELECT da.chapter, da.section,
+                   COALESCE(ro.pu_override, da.pu_ht_ref, 0) AS ref_pu_ht,
+                   al.quantity, al.unit_price_ht
+            FROM dpgf_articles da
+            LEFT JOIN ratio_overrides ro ON ro.dpgf_article_id = da.id
+            LEFT JOIN affaire_lines al
+                ON al.dpgf_article_id = da.id AND al.affaire_id = ?
+            WHERE da.row_type = 'article'
+              AND (da.is_hidden IS NULL OR da.is_hidden = 0)
+        """
+    rows = conn.execute(sql, (affaire_id,)).fetchall()
+    sections_with_detail: set[str] = set()
     for r in rows:
         if not _chapter_included(r["chapter"]):
             continue
         if not _section_included(r["chapter"], r["section"]):
             continue
-        lot = derive_lot_from_chapter(r["chapter"] if r["chapter"] is not None else "")
+        chap = r["chapter"]
+        sec = r["section"]
+        sk = f"sect:{chap}|{sec}"
         qty = float(r["quantity"] or 0)
+        if qty > 0:
+            sections_with_detail.add(sk)
+        lot = derive_lot_from_chapter(chap if chap is not None else "")
         ref = float(r["ref_pu_ht"] or 0)
         pu = r["unit_price_ht"]
         pu_eff = float(pu) if pu is not None else ref
         line_tot = _round_money2(qty * pu_eff)
+        if line_tot > 0:
+            sections_with_detail.add(sk)
         totals[lot] = _round_money2(totals[lot] + line_tot)
+
+    if initialized:
+        for sk, meta in sect_macro.items():
+            if not meta.get("use_macro"):
+                continue
+            if not sect_inc.get(sk, True):
+                continue
+            if sk in sections_with_detail:
+                continue
+            rest = sk[5:]
+            if "|" not in rest:
+                continue
+            chap, _sec = rest.split("|", 1)
+            if not _chapter_included(chap):
+                continue
+            ratio = float(meta.get("ratio_m2_override") or 0)
+            divisor = float(meta.get("qty") or 0)
+            if ratio <= 0 or divisor <= 0:
+                continue
+            lot = derive_lot_from_chapter(chap)
+            macro_tot = _round_money2(ratio * divisor)
+            totals[lot] = _round_money2(totals[lot] + macro_tot)
+
     customs = conn.execute(
         """
         SELECT line_lot, quantity, unit_price_ht
@@ -1113,7 +1676,7 @@ def save_estimation_changes(affaire_id: int, changes: list) -> dict:
             dpgf = ch.get("dpgf_article_id")
             if dpgf not in (None, "", False):
                 dpgf = int(dpgf)
-                ref = _ref_pu_for_article_conn(conn, dpgf)
+                ref = _ref_pu_for_article_conn(conn, dpgf, affaire_id)
                 qty = float(ch.get("quantity") or 0)
                 pu_raw = ch.get("unit_price_ht")
                 if pu_raw is None or pu_raw == "":
@@ -1132,27 +1695,46 @@ def save_estimation_changes(affaire_id: int, changes: list) -> dict:
                     """,
                     (affaire_id, dpgf),
                 ).fetchone()
+                desig = ch.get("line_designation")
+                desig_val = None
+                if desig is not None:
+                    desig_val = (str(desig).strip() or None)
+
                 if row:
-                    conn.execute(
-                        """
-                        UPDATE affaire_lines SET
-                            quantity = ?, quantity_source = 'manual',
-                            unit_price_ht = ?, unit_price_source = 'manual',
-                            total_ht = ?, ratio_ref = ?, deviation_pct = ?
-                        WHERE id = ?
-                        """,
-                        (qty, pu_db, total_ht, ref, round(dev, 1), row["id"]),
-                    )
+                    if desig is not None:
+                        conn.execute(
+                            """
+                            UPDATE affaire_lines SET
+                                quantity = ?, quantity_source = 'manual',
+                                unit_price_ht = ?, unit_price_source = 'manual',
+                                total_ht = ?, ratio_ref = ?, deviation_pct = ?,
+                                line_designation = ?
+                            WHERE id = ?
+                            """,
+                            (qty, pu_db, total_ht, ref, round(dev, 1), desig_val, row["id"]),
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            UPDATE affaire_lines SET
+                                quantity = ?, quantity_source = 'manual',
+                                unit_price_ht = ?, unit_price_source = 'manual',
+                                total_ht = ?, ratio_ref = ?, deviation_pct = ?
+                            WHERE id = ?
+                            """,
+                            (qty, pu_db, total_ht, ref, round(dev, 1), row["id"]),
+                        )
                 else:
                     conn.execute(
                         """
                         INSERT INTO affaire_lines (
                             affaire_id, dpgf_article_id, quantity, quantity_source,
                             unit_price_ht, unit_price_source, total_ht, is_included,
-                            ratio_ref, deviation_pct, unit_override, unit_source
-                        ) VALUES (?, ?, ?, 'manual', ?, 'manual', ?, 1, ?, ?, NULL, 'ratio')
+                            ratio_ref, deviation_pct, unit_override, unit_source,
+                            line_designation
+                        ) VALUES (?, ?, ?, 'manual', ?, 'manual', ?, 1, ?, ?, NULL, 'ratio', ?)
                         """,
-                        (affaire_id, dpgf, qty, pu_db, total_ht, ref, round(dev, 1)),
+                        (affaire_id, dpgf, qty, pu_db, total_ht, ref, round(dev, 1), desig_val),
                     )
                 continue
 
@@ -1448,7 +2030,7 @@ def save_bibliotheque_save(changes: list):
     conn = get_db()
     new_ids = []
     _FIELDS_NO_ARTICLE_ID = frozenset(
-        {"section_ratio", "section_ratio_rename", "section_delete"}
+        {"section_ratio", "section_ratio_rename", "section_delete", "section_move"}
     )
     try:
         _verify_foreign_keys_enabled(conn)
@@ -1525,6 +2107,13 @@ def save_bibliotheque_save(changes: list):
                 elif field == 'section_delete':
                     delete_bibliotheque_section(
                         conn, c.get('chapter', ''), c.get('section', '')
+                    )
+                elif field == 'section_move':
+                    move_bibliotheque_section(
+                        conn,
+                        c.get('chapter', ''),
+                        c.get('section', ''),
+                        c.get('direction', 'down'),
                     )
                 elif field == 'section_ratio_rename':
                     # Renommer la clé section dans bibliotheque_section_ratios
@@ -1668,7 +2257,8 @@ def get_chapter_settings(affaire_id: int) -> dict:
     conn = get_db()
     try:
         rows = conn.execute("""
-            SELECT chapter_key, is_included, use_macro, qty, ratio_m2_override
+            SELECT chapter_key, is_included, use_macro, qty, ratio_m2_override,
+                   COALESCE(is_local, 0) AS is_local
             FROM affaire_chapter_settings
             WHERE affaire_id = ?
         """, (affaire_id,)).fetchall()
@@ -1693,13 +2283,17 @@ def save_chapter_settings(affaire_id: int, settings: list):
             conn.execute("""
                 INSERT INTO affaire_chapter_settings
                     (affaire_id, chapter_key, is_included, use_macro, qty,
-                     ratio_m2_override, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                     ratio_m2_override, is_local, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(affaire_id, chapter_key) DO UPDATE SET
                     is_included       = excluded.is_included,
                     use_macro         = excluded.use_macro,
                     qty               = excluded.qty,
                     ratio_m2_override = excluded.ratio_m2_override,
+                    is_local          = CASE
+                        WHEN excluded.is_local = 1 THEN 1
+                        ELSE affaire_chapter_settings.is_local
+                    END,
                     updated_at        = CURRENT_TIMESTAMP
             """, (
                 affaire_id,
@@ -1708,6 +2302,7 @@ def save_chapter_settings(affaire_id: int, settings: list):
                 1 if s.get('use_macro',   False) else 0,
                 float(s.get('qty', 1.0)),
                 s.get('ratio_m2_override'),
+                1 if s.get('is_local') else 0,
             ))
         conn.commit()
     finally:

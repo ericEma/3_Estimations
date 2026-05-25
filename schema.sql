@@ -163,6 +163,9 @@ CREATE TABLE IF NOT EXISTS devis_lines (
     is_stat_valid       INTEGER NOT NULL DEFAULT 1,
     -- 0 = exclu des ratios (ex: forfait sur article UNITAIRE explicit sans quantité)
 
+    -- PU pondéré (matching) saisi manuellement dans le cockpit
+    weighted_price_override REAL,
+
     created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

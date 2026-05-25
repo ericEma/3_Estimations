@@ -1,6 +1,6 @@
 # CLAUDE.md — Estimation Élec (Egis)
 > Fichier unique de démarrage de session. Remplace la lecture de instructions.md + CURRENT_STATE.md.
-> Mise à jour : 2026-05-02 | Sprint 9.2 — **Bibliothèque DPGF validée (jalon Eric, 2026-05-02)**
+> Mise à jour : 2026-05-25 — **État sauvegardé** : fiche ratios globaux, estimation snapshot/layout, bibliothèque réordonnable, garde-fous
 
 ---
 
@@ -83,7 +83,8 @@ Toutes les formules et textes UI/docs sont en texte brut ou Markdown. Pas de `$.
 affaires (id, name, client, adresse, date_creation, surface_sdo,
     category_id, coef_complexity_cfo, coef_complexity_cfa, coef_complexity_pv,
     coef_risque, taux_marge, statut, notes, created_at, updated_at,
-    kva_cible, phase_etude, taux_incertitude, taux_phase, total_estime_ht)
+    kva_cible, puissance_pv_kwc, pv_system_type,  -- kVA TGBT | kWc PV | toiture|ib|ombriere
+    phase_etude, taux_incertitude, taux_phase, total_estime_ht)
 
 affaire_lines (id, affaire_id, dpgf_article_id, designation, lot, ratio_type,
     unit, quantity, unit_price_ht, total_ht, is_included,
@@ -103,6 +104,9 @@ building_categories (id, name)   -- 15 types de bâtiments
 
 bibliotheque_section_ratios (id, chapter, section, ratio_m2, updated_at,
     UNIQUE(chapter, section))    -- ratios manuels par section bibliothèque
+
+-- Import / matching (hors affaire calculateur)
+devis_lines (…, weighted_price_override REAL)  -- PU pondéré forcé manuellement (cockpit)
 ```
 
 ---
@@ -112,9 +116,10 @@ bibliotheque_section_ratios (id, chapter, section, ratio_m2, updated_at,
 | Route | Méthode | Description |
 |---|---|---|
 | `/` | GET | Dashboard — liste affaires |
-| `/affaire/new` | GET/POST | Créer affaire → redirection `/affaire/<id>/estimation` (injection 285 lignes au 1er passage calculateur si vide) |
+| `/affaire/new` | GET/POST | Créer affaire → redirection `/affaire/<id>/estimation` |
+| `/affaire/<id>/edit` | GET/POST | Édition fiche affaire (`affaire_new.html`) |
+| `/api/affaire/preview_estimation` | GET | Preview CFO/CFA/PV (base bibliothèque `pu_ht_ref`, debounce fiche) |
 | `/affaire/<id>` | GET | Calculateur DPGF |
-| `/affaire/<id>/edit` | GET/POST | Édition fiche affaire |
 | `/api/affaire/<id>/save` | POST | Sauvegarder lignes + total_estime |
 | `/api/affaire/<id>/params` | POST | Auto-save paramètres |
 | `/api/affaire/<id>/chapter_settings` | POST | Auto-save checkbox/mode Macro |
@@ -125,6 +130,15 @@ bibliotheque_section_ratios (id, chapter, section, ratio_m2, updated_at,
 | `/bibliotheque/<id>` | GET | Bibliothèque DPGF contextuelle affaire |
 | `/api/bibliotheque/save` | POST | Sauvegarder éditions bibliothèque (debounce 800ms) |
 | `/api/bibliotheque/article/delete` | POST | Supprimer (custom) ou masquer (PSA) article |
+| `/matching`, `/matching/<id>` | GET | Revue Matching — cockpit post-import |
+| `/api/matching/<id>/data` | GET | Données projet + lignes groupées chapitre/section |
+| `/api/matching/line/<id>/candidates` | GET | Candidats fuzzy + métadonnées ligne (`base_chapter` / `base_section` DPGF si mappé) |
+| `/api/matching/line/<id>/select` | POST | Appliquer article DPGF (reset `weighted_price_override`) |
+| `/api/matching/line/<id>/weighted_price` | POST | Saisie / effacement PU calculé manuel (`weighted_price_override`) |
+| `/api/matching/<id>/validate` | POST | Marquer projet validé (`import_ok`) |
+| `/api/affaire/<id>/estimation/save` | POST | Auto-save lignes page Estimation |
+| `/api/affaire/<id>/estimation/layout` | POST | Sections/articles affaire-only + ordre (Sprint 11) |
+| `/api/affaire/<id>/estimation/promote` | POST | Promotion section/article → base de prix |
 
 ---
 
@@ -136,16 +150,25 @@ models.py           — Couche SQLite : migrations auto, get_bibliotheque_data, 
                       delete_bibliotheque_section, _verify_foreign_keys_enabled,
                       hide_article, delete_custom_article, save_total_estime, get_affaires (COALESCE)
                       — voir DB_ARCHITECTURE.md (FK, suppressions manuelles)
-engine_ratios.py    — compute_ratios(sdo, ccfo, ccfa, cpv) → ratios in-memory pondérés
+engine_ratios.py              — compute_ratios(sdo, ccfo, ccfa, cpv) → ratios devis importés (calculateur / matching)
+scripts/engine_bibliotheque_ratios.py — totaux par lot depuis pu_ht_ref (preview fiche affaire)
 templates/
   base.html         — Navbar avec lien 📖 Bibliothèque DPGF
   affaire.html      — Calculateur : lot detection, data-ratio-ref, section-subtotals
-  affaire_new.html  — Fiche affaire (create/edit mode)
+  affaire_new.html  — Fiche affaire : sliders complexité CFO/CFA, slider PV 3 crans, carte preview 4 lignes
   bibliotheque.html — Tree-grid Chapitre→Section→Article, inline edit, KPI strip
 static/js/
-  affaire.js        — updateAllTotals (section-first), currentTotal global, saveAffaire
-  bibliotheque.js   — render, inline edit, orange rule, delete, section ratio, validation
+  affaire.js            — updateAllTotals (section-first), currentTotal global, saveAffaire
+  complexity_scale.js   — 5 paliers complexité CFO/CFA (fiche + calculateur)
+  pv_system_scale.js    — 3 paliers type système PV (fiche affaire uniquement)
+  bibliotheque.js       — render, inline edit, orange rule, delete, section ratio, validation
+  matching.js           — Revue Matching : grille, modal article, PU calculé, ratios section
+  affaire_estimation.js — Page Estimation : snapshot, layout, promotion, désignations
+estimation_layout.py    — add/rename/move section, add/move article (affaire-only)
+estimation_promote.py   — promote_section / promote_article → dpgf_articles
 static/css/style.css
+templates/matching_view.html — Page cockpit matching (styles inline + modal)
+engine_matching.py — clean_designation, fuzzy, candidats (tokens avec élisions `'`)
 ```
 
 ---
@@ -231,3 +254,82 @@ const CHAP_ORDER = ['Courants Forts', 'Courants faibles', 'Photovoltaïque'];
 7. Prix stockés neutralisés (`/ coef_lot`) ?
 8. `sdo_m2` renseigné pour imports ?
 9. Migration FK-safe si modification de table avec FK ?
+
+---
+
+## 12. Revue Matching — rappels (2026-05)
+
+- **PU calculé** : éditable inline sauf ligne exclue ; persistance `weighted_price_override` ; réinitialisation auto à la sélection d’un autre article DPGF.
+- **Modal** : fil « chapitre | section | article » = colonnes **`dpgf_articles`** (pas le chemin devis) ; si ligne non mappée, affichage du **1er candidat** ; ligne « nettoyé » affichée dès que `cleaned_designation` non vide (même identique au brut).
+- **Désignations** : colonnes devis / base en **texte complet** avec retours à la ligne (`pre-wrap` sur `.cell-desig-text` et `.sel-text`).
+- **Matching texte** : `_TOKEN_RE` inclut les mots élidés (`d'un`, `l'armoire`) ; `_sanitize_text` normalise l’apostrophe typographique U+2019.
+
+---
+
+## 13. Fiche affaire — estimation prévisionnelle (2026-05-23, validé Eric)
+
+- **Page** : `/affaire/new`, `/affaire/<id>/edit` — template `affaire_new.html`.
+- **PV** : slider **3 crans** (`pv_system_scale.js`) → `pv_system_type` : `toiture` (×1,0), `ib` (×1,3), `ombriere` (×1,55). Pas de slider complexité 5 paliers sur le lot PV (fiche : `coef_complexity_pv` = 1,0).
+- **CFO / CFA** : slider complexité 5 paliers (`complexity_scale.js`) → `coef_complexity_{cfo,cfa}`.
+- **Puissance** : `kva_cible` = TGBT kVA ; `puissance_pv_kwc` = diviseur €/kWc chapitre Photovoltaïque.
+- **Preview** : `GET /api/affaire/preview_estimation` → `compute_affaire_preview_estimation()` dans `app.py`.
+- **Source ratios** : `scripts/engine_bibliotheque_ratios.compute_bibliotheque_lot_totals()` — **même logique que** `bibliotheque.js` (`pu_ht_ref`, `bibliotheque_section_ratios`). Ne pas utiliser `compute_ratios()` pour cette preview.
+- **Formule affichée** :
+  - Base lot = Σ articles bibliothèque (CFO/CFA : €/m² × SDO ; PV : €/kWc × kWc).
+  - Prix CFO/CFA = base × `coef_complexity` × `(1+phase%)×(1+incertitude%)×(1+risque%)`.
+  - Prix PV = base × `pv_system_coef` × provisions (sans complexité PV).
+- **Carte résultat** : 4 lignes (CFO, CFA, PV, Total) + ligne ratios de référence (base hors provisions).
+- **Constantes** : `models.PV_SYSTEM_TYPES`, `normalize_pv_system_type()`, `pv_system_coef()`.
+
+---
+
+## 14. Page Estimation — snapshot + layout (2026-05-24, validé Eric)
+
+### Snapshot (création affaire uniquement)
+- `initialize_estimation_snapshot()` dans `create_affaire()` ; `affaires.estimation_initialized_at`
+- PU figés : `affaire_lines.ratio_ref` (+ `unit_price_ht` si `pu_ht_ref` > 0)
+- Si `pu_ht_ref` NULL : `_snapshot_pu_from_bibliotheque()` = même règle que `bibliotheque()` (`compute_ratios()` devis)
+- **Pas de resync** biblio ni `/api/ratios` sur affaires initialisées
+- Sections biblio avec ratio manuel → `affaire_chapter_settings` `use_macro` + `ratio_m2_override`
+- SDO / kWc : recalcul **macros section** (`sync_estimation_macro_divisors`), pas qty articles m²
+
+### Layout affaire-only (`estimation_layout.py`)
+- Actions POST `estimation/layout` : `add_section`, `add_article`, `delete_section`, `move_section`, `move_article`, `rename_section`
+- Sections locales : `affaire_chapter_settings.is_local = 1` ; ordre `affaire_estimation_section_sort`
+- Articles arbre : `affaire_lines` avec `line_chapter` / `line_section` / `sort_order`, `dpgf_article_id` NULL
+- Nouvelle section : insérée **après** le sous-chapitre courant ; macro ratio ; **1 article** vide ; pas hors catalogue
+
+### Désignations
+- Classe CSS `estim-desig-edit` (rendu texte, pas cadre montant)
+- Articles catalogue : override `affaire_lines.line_designation` (affichage `COALESCE(line_designation, da.designation)`)
+- Sections PSA : libellé lecture seule ; sections **locales** : renommage via `rename_section`
+
+### Promotion base de prix (`estimation_promote.py`)
+- `POST estimation/promote` : `promote_section`, `promote_article`
+- Crée `dpgf_articles` is_custom=1 ; relie les lignes affaire ; copie ratio section si macro
+
+### À faire (Sprint 5)
+- Ratios **globaux** CFO/CFA/PV éditables sur fiche affaire (preview), distincts complexité / type PV
+---
+
+## 15. État sauvegardé 2026-05-25 — Ne pas casser
+
+### Fonctionnalités validées Eric
+- Fiche affaire : ratios globaux CFO/CFA/PV éditables, persistés, utilisés uniquement pour la preview fiche; ratio total €/m² sous le total.
+- Page Estimation : snapshot figé à la création, layout affaire-only, promotion base de prix, header phase/incertitude/risque auto-save, bouton hors catalogue retiré.
+- Sous-chapitres estimation : insertion sous le clic, renommage sans doublon DOM, suppression sections locales, total macro/detail basé sur total article positif.
+- Bibliothèque : déplacement ▲/▼ des sous-chapitres avec leurs articles, persistance `dpgf_articles.row_order`.
+- Promotion : section promue insérée au bon endroit dans la bibliothèque selon `affaire_estimation_section_sort`.
+- Dashboard : bouton `Fiche` + bouton `Estimer` sur chaque carte affaire.
+
+### Tests garde-fous
+```bash
+python -m unittest tests.test_affaire_preview_ratios tests.test_estimation_snapshot tests.test_estimation_promote tests.test_bibliotheque_section_move -v
+node --check static/js/affaire_estimation.js
+node --check static/js/bibliotheque.js
+```
+
+### Prochaine priorité
+- Export Excel page Estimation : exporter l'état snapshot/layout réel, pas le calculateur legacy.
+- Feedback visuel `saving…` sur autosaves.
+

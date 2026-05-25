@@ -3,31 +3,39 @@
 '  Lance l'application web Estimation Elec en mode INVISIBLE
 '  (aucune fenetre console). Ouvre le navigateur automatiquement.
 '
-'  Pour un lancement AVEC fenetre console (debug),
-'  utiliser Lancer_Estimateur_DEBUG.bat a la place.
+'  Prerequis : dossier python\ avec pythonw.exe + dependances pip
+'  Debug     : Lancer_Estimateur_DEBUG.bat (console visible)
 ' ============================================================
 
 Option Explicit
 
-Dim objShell, objFSO, strScriptDir, strPythonw, strApp, strLogsDir
+Dim objShell, objFSO, strScriptDir, strPythonw, strApp
+Dim ready, elapsed, maxWaitMs, stepMs, strLogFile
 
 Set objShell = CreateObject("WScript.Shell")
 Set objFSO   = CreateObject("Scripting.FileSystemObject")
 
-' ─── Dossier du script ──────────────────────────────────────
 strScriptDir = objFSO.GetParentFolderName(WScript.ScriptFullName)
 objShell.CurrentDirectory = strScriptDir
 
-' ─── Verification Python embeddable ────────────────────────
+' ─── Dossiers requis (aligne sur Lancer_Estimateur.bat) ─────
+EnsureFolder strScriptDir & "\logs"
+EnsureFolder strScriptDir & "\exports"
+EnsureFolder strScriptDir & "\uploads"
+
+strLogFile = strScriptDir & "\logs\serveur.log"
+
+' ─── Verification Python embeddable ─────────────────────────
 strPythonw = strScriptDir & "\python\pythonw.exe"
 If Not objFSO.FileExists(strPythonw) Then
   MsgBox "Python embeddable introuvable :" & vbCrLf & strPythonw & vbCrLf & vbCrLf & _
-         "Relancez le setup initial ou utilisez Lancer_Estimateur_DEBUG.bat.", _
+         "Installez Python dans le dossier python\ du projet" & vbCrLf & _
+         "(python.exe -m pip install -r requirements.txt)" & vbCrLf & vbCrLf & _
+         "Ou utilisez Lancer_Estimateur_DEBUG.bat pour diagnostiquer.", _
          16, "Estimation Elec - Erreur"
   WScript.Quit 1
 End If
 
-' ─── Verification app.py ───────────────────────────────────
 strApp = strScriptDir & "\app.py"
 If Not objFSO.FileExists(strApp) Then
   MsgBox "app.py introuvable dans :" & vbCrLf & strScriptDir, _
@@ -35,33 +43,25 @@ If Not objFSO.FileExists(strApp) Then
   WScript.Quit 1
 End If
 
-' ─── Creation dossier logs si absent ───────────────────────
-strLogsDir = strScriptDir & "\logs"
-If Not objFSO.FolderExists(strLogsDir) Then
-  objFSO.CreateFolder(strLogsDir)
+' ─── Port 5000 deja en ecoute ? ─────────────────────────────
+If IsPort5000Listening(objShell) Then
+  If FlaskHttpReady() Then
+    OpenBrowser objShell
+    WScript.Quit 0
+  Else
+    MsgBox "Le port 5000 est deja utilise, mais ce n'est pas l'application Estimation Elec." & vbCrLf & vbCrLf & _
+           "Arretez l'autre programme ou changez de port, puis relancez.", _
+           48, "Estimation Elec"
+    WScript.Quit 1
+  End If
 End If
 
-' ─── Si le port 5000 est deja pris : on ouvre juste le navigateur ─
-Dim objExec, strNetstat
-Set objExec = objShell.Exec("cmd /c netstat -ano | findstr "":5000 "" | findstr ""LISTENING""")
-strNetstat = objExec.StdOut.ReadAll()
-If Len(Trim(strNetstat)) > 0 Then
-  ' Serveur deja actif - on ouvre juste le navigateur
-  objShell.Run "http://localhost:5000", 1, False
-  WScript.Quit 0
-End If
-
-' ─── Lancement invisible du serveur Flask ──────────────────
-' On passe par cmd /c pour pouvoir detacher proprement le processus.
-' La redirection des logs est deja gereee par app.py (via sys.stdout).
+' ─── Lancement invisible (cmd + cd /d pour chemins avec espaces)
 Dim strCmd
-strCmd = """" & strPythonw & """ """ & strApp & """"
+strCmd = "cmd /c cd /d """ & strScriptDir & """ && """ & strPythonw & """ """ & strApp & """"
 objShell.Run strCmd, 0, False
 
-' ─── Polling : on attend que Flask reponde vraiment sur / ──
-' Tentatives toutes les 400 ms jusqu'a 45 s. Des que Flask repond
-' avec un code HTTP valide (2xx/3xx), on ouvre le navigateur.
-Dim http, ready, elapsed, maxWaitMs, stepMs
+' ─── Attente : HTTP (prioritaire) + repli netstat ───────────
 ready     = False
 elapsed   = 0
 maxWaitMs = 45000
@@ -70,29 +70,83 @@ stepMs    = 400
 Do While Not ready And elapsed < maxWaitMs
   WScript.Sleep stepMs
   elapsed = elapsed + stepMs
-  On Error Resume Next
-  Set http = CreateObject("MSXML2.XMLHTTP")
-  http.Open "GET", "http://localhost:5000/", False
-  http.Send
-  If Err.Number = 0 Then
-    If http.Status >= 200 And http.Status < 400 Then
-      ready = True
-    End If
+  If FlaskHttpReady() Then
+    ready = True
+  ElseIf IsPort5000Listening(objShell) Then
+    ' Port ouvert mais HTTP pas encore pret (demarrage lent)
+    WScript.Sleep 500
+    If FlaskHttpReady() Then ready = True
   End If
-  Err.Clear
-  On Error Goto 0
 Loop
 
-If Not ready Then
-  MsgBox "Le serveur met anormalement longtemps a demarrer." & vbCrLf & _
-         "Consultez logs\serveur.log pour diagnostiquer.", _
-         48, "Estimation Elec"
+If ready Then
+  OpenBrowser objShell
+  WScript.Quit 0
 End If
 
-' ─── Ouverture du navigateur ───────────────────────────────
-objShell.Run "http://localhost:5000", 1, False
+MsgBox "Le serveur n'a pas repondu a temps (45 s)." & vbCrLf & vbCrLf & _
+       "Consultez le journal :" & vbCrLf & strLogFile & vbCrLf & vbCrLf & _
+       "Pour un diagnostic avec fenetre console :" & vbCrLf & _
+       "Lancer_Estimateur_DEBUG.bat", _
+       48, "Estimation Elec"
+WScript.Quit 1
 
-Set objShell = Nothing
-Set objFSO   = Nothing
-Set objExec  = Nothing
-Set http     = Nothing
+
+' ─── Helpers ────────────────────────────────────────────────
+
+Sub EnsureFolder(path)
+  If Not objFSO.FolderExists(path) Then objFSO.CreateFolder(path)
+End Sub
+
+Sub OpenBrowser(shell)
+  shell.Run "http://127.0.0.1:5000/", 1, False
+End Sub
+
+Function IsPort5000Listening(shell)
+  Dim exec, out
+  Set exec = shell.Exec("cmd /c netstat -ano | findstr /C:"":5000 "" | findstr /C:""LISTENING""")
+  Do While exec.Status = 0
+    WScript.Sleep 50
+  Loop
+  out = exec.StdOut.ReadAll()
+  IsPort5000Listening = (Len(Trim(out)) > 0)
+End Function
+
+Function FlaskHttpReady()
+  Dim http, st
+  On Error Resume Next
+  Err.Clear
+
+  Set http = Nothing
+  Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+  If http Is Nothing Or Err.Number <> 0 Then
+    Err.Clear
+    Set http = CreateObject("MSXML2.XMLHTTP")
+  End If
+  If http Is Nothing Then
+    FlaskHttpReady = False
+    Exit Function
+  End If
+
+  On Error Resume Next
+  http.Open "GET", "http://127.0.0.1:5000/", False
+  If Err.Number <> 0 Then
+    Err.Clear
+    FlaskHttpReady = False
+    Exit Function
+  End If
+
+  On Error Resume Next
+  http.setTimeouts 1500, 1500, 3000, 5000
+  http.Send
+  If Err.Number <> 0 Then
+    Err.Clear
+    FlaskHttpReady = False
+    Exit Function
+  End If
+
+  st = http.Status
+  FlaskHttpReady = (st >= 200 And st < 400)
+  Err.Clear
+  On Error Goto 0
+End Function

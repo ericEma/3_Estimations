@@ -70,6 +70,7 @@ def compute_ratios(
     target_complexity_cfa: float = 1.0,
     target_complexity_pv: float = 1.0,
     ref_year: int | None = None,
+    category_id: int | None = None,
 ) -> dict:
     """
     Calcule les ratios de référence pour tous les articles DPGF.
@@ -94,7 +95,7 @@ def compute_ratios(
     conn = _connect()
     try:
         # Récupère toutes les lignes mappées avec leur projet
-        rows = conn.execute("""
+        sql = """
             SELECT
                 dl.dpgf_article_id,
                 dl.prix_normalise,
@@ -116,7 +117,12 @@ def compute_ratios(
               AND dl.prix_normalise > 0
               AND dl.quantity IS NOT NULL
               AND p.surface_sdo > 0
-        """).fetchall()
+        """
+        params: list = []
+        if category_id is not None:
+            sql += " AND p.category_id = ?"
+            params.append(int(category_id))
+        rows = conn.execute(sql, params).fetchall()
 
         # Groupement par article
         from collections import defaultdict

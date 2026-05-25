@@ -51,6 +51,7 @@ sys.path.insert(0, PROJECT_DIR)
 
 import models
 from scripts.engine_ratios import get_dpgf_tree_with_ratios, compute_ratios
+from scripts.engine_bibliotheque_ratios import compute_bibliotheque_lot_totals
 from scripts.export_excel import export_dpgf_excel
 from loguru import logger
 
@@ -80,6 +81,15 @@ for folder in [app.config['UPLOAD_FOLDER'], app.config['EXPORT_FOLDER']]:
 
 # Initialise les tables web au démarrage
 models.ensure_app_tables()
+
+
+@app.context_processor
+def inject_global_nav():
+    """Menu latéral commun + date MAJ base de prix (modification PU)."""
+    return {
+        'nav_affaires': models.get_affaires(),
+        'base_price_last_updated': models.get_base_price_last_updated(),
+    }
 
 
 # ─── Gestionnaires d'erreurs HTTP globaux ────────────────────────────────────
@@ -145,39 +155,110 @@ def index():
                            categories=categories)
 
 
-def _compute_preview_context():
-    """Ratios €/m² par lot (complexité 1.0) + date de dernière MAJ de la BDD.
+def _preview_maj_date():
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(models.DB_PATH)).strftime('%d-%m-%Y')
+    except Exception:
+        return None
 
-    Utilisé par la page Création / Édition d'affaire pour l'estimation
-    prévisionnelle CFO/CFA/PV.
+
+def compute_affaire_preview_estimation(
+    surface_sdo,
+    puissance_pv_kwc,
+    taux_phase,
+    taux_incertitude,
+    coef_risque,
+    coef_complexity_cfo,
+    coef_complexity_cfa,
+    pv_system_type,
+    ratio_global_cfo_m2=None,
+    ratio_global_cfa_m2=None,
+    ratio_global_pv_kwc=None,
+):
+    """Estimation prévisionnelle — ratios fiche ou Bibliothèque DPGF (pu_ht_ref).
+
+    Prix CFO/CFA = ratio global × SDO × complexité lot × provisions.
+    Prix PV = ratio global × kWc × coef type système × provisions.
     """
-    try:
-        ratios = compute_ratios(target_sdo=1000.0,
-                                target_complexity_cfo=1.0,
-                                target_complexity_cfa=1.0,
-                                target_complexity_pv=1.0)
-        totals = {'CFO': 0.0, 'CFA': 0.0, 'PV': 0.0}
-        for r in ratios.values():
-            lot = r.get('lot') or 'CFO'
-            totals[lot] = totals.get(lot, 0.0) + (r.get('total_estime') or 0.0)
-        ratio_m2_cfo = totals['CFO'] / 1000.0
-        ratio_m2_cfa = totals['CFA'] / 1000.0
-        ratio_m2_pv  = totals['PV']  / 1000.0
-    except Exception:
-        ratio_m2_cfo, ratio_m2_cfa, ratio_m2_pv = 113.13, 0.0, 0.0
-
-    try:
-        mtime = os.path.getmtime(models.DB_PATH)
-        maj_date = datetime.fromtimestamp(mtime).strftime('%d-%m-%Y')
-    except Exception:
-        maj_date = None
-
-    return {
-        'ratio_m2_cfo': round(ratio_m2_cfo, 2),
-        'ratio_m2_cfa': round(ratio_m2_cfa, 2),
-        'ratio_m2_pv':  round(ratio_m2_pv,  2),
-        'maj_date_bdd': maj_date,
+    biblio = compute_bibliotheque_lot_totals(surface_sdo, puissance_pv_kwc)
+    sdo = biblio['surface_sdo']
+    kwc = biblio['puissance_pv_kwc']
+    ratio_cfo = models.optional_positive_float(ratio_global_cfo_m2) or biblio['ratio_m2_cfo']
+    ratio_cfa = models.optional_positive_float(ratio_global_cfa_m2) or biblio['ratio_m2_cfa']
+    ratio_pv = models.optional_positive_float(ratio_global_pv_kwc) or biblio['ratio_kwc_pv']
+    base = {
+        'CFO': ratio_cfo * sdo,
+        'CFA': ratio_cfa * sdo,
+        'PV': ratio_pv * kwc,
     }
+    ccfo = models.snap_complexity_coef(coef_complexity_cfo)
+    ccfa = models.snap_complexity_coef(coef_complexity_cfa)
+    prov = (
+        (1.0 + float(taux_phase or 0) / 100.0)
+        * (1.0 + float(taux_incertitude or 0) / 100.0)
+        * (1.0 + float(coef_risque or 0) / 100.0)
+    )
+    pv_sys = models.pv_system_coef(pv_system_type)
+    prix_cfo = base['CFO'] * ccfo * prov
+    prix_cfa = base['CFA'] * ccfa * prov
+    prix_pv = base['PV'] * pv_sys * prov
+    total = prix_cfo + prix_cfa + prix_pv
+    return {
+        'prix_cfo': round(prix_cfo, 0),
+        'prix_cfa': round(prix_cfa, 0),
+        'prix_pv': round(prix_pv, 0),
+        'prix_total': round(total, 0),
+        'ratio_m2_cfo': round(ratio_cfo, 2),
+        'ratio_m2_cfa': round(ratio_cfa, 2),
+        'ratio_kwc_pv': round(ratio_pv, 4),
+        'coef_pv_system': pv_sys,
+        'maj_date_bdd': _preview_maj_date(),
+    }
+
+
+def _compute_preview_context(affaire=None):
+    """Contexte initial page Création / Édition (date MAJ BDD)."""
+    surface = 1000
+    kwc = 100
+    if affaire:
+        surface = affaire.get('surface_sdo') or surface
+        kwc = affaire.get('puissance_pv_kwc') or kwc
+    biblio = compute_bibliotheque_lot_totals(surface, kwc)
+    return {
+        'maj_date_bdd': _preview_maj_date(),
+        'preview_ratio_global_cfo_m2': (
+            models.optional_positive_float(affaire.get('ratio_global_cfo_m2')) if affaire else None
+        ) or biblio['ratio_m2_cfo'],
+        'preview_ratio_global_cfa_m2': (
+            models.optional_positive_float(affaire.get('ratio_global_cfa_m2')) if affaire else None
+        ) or biblio['ratio_m2_cfa'],
+        'preview_ratio_global_pv_kwc': (
+            models.optional_positive_float(affaire.get('ratio_global_pv_kwc')) if affaire else None
+        ) or biblio['ratio_kwc_pv'],
+    }
+
+
+@app.route('/api/affaire/preview_estimation')
+def api_affaire_preview_estimation():
+    """Calcul temps réel de l'estimation prévisionnelle (fiche affaire)."""
+    try:
+        payload = compute_affaire_preview_estimation(
+            surface_sdo=request.args.get('surface_sdo', 1000),
+            puissance_pv_kwc=request.args.get('puissance_pv_kwc', 100),
+            taux_phase=request.args.get('taux_phase', 3),
+            taux_incertitude=request.args.get('taux_incertitude', 3),
+            coef_risque=request.args.get('coef_risque', 1),
+            coef_complexity_cfo=request.args.get('coef_complexity_cfo', 1),
+            coef_complexity_cfa=request.args.get('coef_complexity_cfa', 1),
+            pv_system_type=request.args.get('pv_system_type', 'toiture'),
+            ratio_global_cfo_m2=request.args.get('ratio_global_cfo_m2'),
+            ratio_global_cfa_m2=request.args.get('ratio_global_cfa_m2'),
+            ratio_global_pv_kwc=request.args.get('ratio_global_pv_kwc'),
+        )
+        return jsonify({'ok': True, **payload})
+    except Exception as exc:
+        logger.exception('preview_estimation failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
 
 
 @app.route('/affaire/new', methods=['GET', 'POST'])
@@ -191,19 +272,22 @@ def affaire_new():
             'adresse':             request.form.get('adresse'),
             'surface_sdo':         float(request.form.get('surface_sdo') or 1000),
             'category_id':         request.form.get('category_id') or None,
-            'coef_complexity_cfo': float(request.form.get('coef_complexity_cfo') or 1.0),
-            'coef_complexity_cfa': float(request.form.get('coef_complexity_cfa') or 1.0),
-            'coef_complexity_pv':  float(request.form.get('coef_complexity_pv')  or 1.0),
+            'coef_complexity_cfo': models.snap_complexity_coef(request.form.get('coef_complexity_cfo')),
+            'coef_complexity_cfa': models.snap_complexity_coef(request.form.get('coef_complexity_cfa')),
+            'coef_complexity_pv':  1.0,
+            'ratio_global_cfo_m2': request.form.get('ratio_global_cfo_m2'),
+            'ratio_global_cfa_m2': request.form.get('ratio_global_cfa_m2'),
+            'ratio_global_pv_kwc': request.form.get('ratio_global_pv_kwc'),
             'coef_risque':         float(request.form.get('coef_risque') or 1.0),
             'kva_cible':           float(request.form.get('kva_cible') or 800.0),
+            'puissance_pv_kwc':    float(request.form.get('puissance_pv_kwc') or 100.0),
+            'pv_system_type':      request.form.get('pv_system_type'),
             'phase_etude':         request.form.get('phase_etude') or 'APD',
             'taux_phase':          float(request.form.get('taux_phase') or 3.0),
             'taux_incertitude':    float(request.form.get('taux_incertitude') or 3.0),
             'notes':               request.form.get('notes'),
         }
         affaire_id = models.create_affaire(data)
-        # Pas d'injection ici : la page Estimation affiche le catalogue avec qté 0
-        # tant qu'aucune ligne n'existe ; le calculateur injecte au premier passage si besoin.
         return redirect(url_for('affaire_estimation', affaire_id=affaire_id))
 
     return render_template('affaire_new.html',
@@ -226,11 +310,16 @@ def affaire_edit(affaire_id):
             'adresse':             request.form.get('adresse'),
             'surface_sdo':         float(request.form.get('surface_sdo') or affaire['surface_sdo']),
             'category_id':         request.form.get('category_id') or None,
-            'coef_complexity_cfo': float(request.form.get('coef_complexity_cfo') or 1.0),
-            'coef_complexity_cfa': float(request.form.get('coef_complexity_cfa') or 1.0),
-            'coef_complexity_pv':  float(request.form.get('coef_complexity_pv')  or 1.0),
+            'coef_complexity_cfo': models.snap_complexity_coef(request.form.get('coef_complexity_cfo')),
+            'coef_complexity_cfa': models.snap_complexity_coef(request.form.get('coef_complexity_cfa')),
+            'coef_complexity_pv':  1.0,
+            'ratio_global_cfo_m2': request.form.get('ratio_global_cfo_m2'),
+            'ratio_global_cfa_m2': request.form.get('ratio_global_cfa_m2'),
+            'ratio_global_pv_kwc': request.form.get('ratio_global_pv_kwc'),
             'coef_risque':         float(request.form.get('coef_risque') or 0.0),
             'kva_cible':           float(request.form.get('kva_cible') or 800.0),
+            'puissance_pv_kwc':    float(request.form.get('puissance_pv_kwc') or 100.0),
+            'pv_system_type':      request.form.get('pv_system_type'),
             'phase_etude':         request.form.get('phase_etude') or 'APD',
             'taux_phase':          float(request.form.get('taux_phase') or 3.0),
             'taux_incertitude':    float(request.form.get('taux_incertitude') or 3.0),
@@ -244,7 +333,8 @@ def affaire_edit(affaire_id):
                            categories=categories,
                            affaire=affaire,
                            edit_mode=True,
-                           **_compute_preview_context())
+                           current_affaire_id=affaire_id,
+                           **_compute_preview_context(affaire))
 
 
 @app.route('/affaire/<int:affaire_id>')
@@ -334,6 +424,7 @@ def affaire_view(affaire_id):
 
     return render_template('affaire.html',
                            affaire=affaire,
+                           current_affaire_id=affaire_id,
                            tree=tree,
                            totals=totals,
                            categories=categories)
@@ -359,12 +450,51 @@ def affaire_estimation(affaire_id):
         affaire=affaire,
         affaires=affaires,
         affaire_id=affaire_id,
+        current_affaire_id=affaire_id,
         catalog_rows=catalog,
         custom_rows=customs,
         totals=totals,
         chapter_state=chapter_state,
         section_state=section_state,
     )
+
+
+@app.route('/api/affaire/<int:affaire_id>/estimation/promote', methods=['POST'])
+def affaire_estimation_promote(affaire_id):
+    """Promotion section / article affaire-only → base de prix."""
+    if not models.get_affaire(affaire_id):
+        return jsonify({'ok': False, 'message': 'Affaire introuvable'}), 404
+    data = request.get_json(force=True) or {}
+    action = (data.get('action') or '').strip()
+    try:
+        from estimation_promote import handle_promote_action
+
+        out = handle_promote_action(affaire_id, action, data)
+        if out.get('status') != 'ok':
+            return jsonify({'ok': False, 'message': out.get('message', 'Erreur')}), 400
+        return jsonify({'ok': True, **out})
+    except Exception as exc:
+        logger.exception('estimation/promote failed')
+        return jsonify({'ok': False, 'message': str(exc)}), 500
+
+
+@app.route('/api/affaire/<int:affaire_id>/estimation/layout', methods=['POST'])
+def affaire_estimation_layout(affaire_id):
+    """Sections/articles affaire-only + réordonnancement (Sprint 11)."""
+    if not models.get_affaire(affaire_id):
+        return jsonify({'ok': False, 'message': 'Affaire introuvable'}), 404
+    data = request.get_json(force=True) or {}
+    action = (data.get('action') or '').strip()
+    try:
+        from estimation_layout import handle_layout_action
+
+        out = handle_layout_action(affaire_id, action, data)
+        if out.get('status') != 'ok':
+            return jsonify({'ok': False, 'message': out.get('message', 'Erreur')}), 400
+        return jsonify({'ok': True, **out})
+    except Exception as exc:
+        logger.exception('estimation/layout failed')
+        return jsonify({'ok': False, 'message': str(exc)}), 500
 
 
 @app.route('/api/affaire/<int:affaire_id>/estimation/save', methods=['POST'])
@@ -410,11 +540,15 @@ def affaire_params(affaire_id):
     data = request.get_json(force=True)
     models.update_affaire_params(affaire_id, data)
     synced = 0
-    if 'surface_sdo' in data and models.get_affaire(affaire_id):
+    affaire = models.get_affaire(affaire_id)
+    if affaire and ('surface_sdo' in data or 'puissance_pv_kwc' in data):
         try:
-            synced = models.batch_sync_estimation_m2_quantities(
-                affaire_id, float(data['surface_sdo'])
-            )
+            sdo = float(affaire.get('surface_sdo') or 0)
+            kwc = float(affaire.get('puissance_pv_kwc') or 100)
+            if affaire.get('estimation_initialized_at'):
+                synced = models.sync_estimation_macro_divisors(affaire_id, sdo, kwc)
+            elif 'surface_sdo' in data:
+                synced = models.batch_sync_estimation_m2_quantities(affaire_id, sdo)
         except (TypeError, ValueError):
             synced = 0
     kpis = models.compute_estimation_kpis(affaire_id)
@@ -506,6 +640,7 @@ def bibliotheque(affaire_id=None):
         articles_json=json.dumps(articles, ensure_ascii=False),
         sec_ratios_json=json.dumps(data.get('sec_ratios', {}), ensure_ascii=False),
         affaire_id=affaire_id,
+        current_affaire_id=affaire_id,
         affaire_courante=affaire_courante,
         nb_articles=nb_articles,
         nb_chapitres=nb_chapitres,
@@ -558,13 +693,14 @@ def bibliotheque_article_delete():
 
 @app.route('/ratios')
 def ratios_page():
-    from scripts.rapport_ratios import compute_strategic_ratios
-    conn = models.get_db()
-    ratios_raw = compute_ratios(5000)
-    conn.close()
-    return render_template('index.html',
-                           affaires=models.get_affaires(),
-                           categories=models.get_categories())
+    """Ancienne route — redirection vers Statistiques."""
+    return redirect(url_for('statistiques_page'))
+
+
+@app.route('/statistiques')
+def statistiques_page():
+    """Tableaux de bord ratios / typologie bâtiment (en cours de développement)."""
+    return render_template('statistiques.html')
 
 
 @app.route('/import')
@@ -775,6 +911,84 @@ _last_heartbeat     = None                  # None = aucun heartbeat reçu
 _heartbeat_lock     = threading.Lock()
 # ─── Matching Cockpit — Lot 3 ────────────────────────────────────────────────
 
+def _apply_matching_line_weighted_pricing(r: dict, conn, devis_date) -> None:
+    """Remplit weighted_price, wp_tooltip, ecart_pct, wp_manual (dict ligne + join base)."""
+    from utils import calculate_weighted_price, get_effective_date
+
+    computed_wp = None
+    computed_tt = None
+
+    if r.get('dpgf_article_id') and r.get('unit_price_ht') and r.get('base_pu'):
+        eff_date = get_effective_date(conn, r['dpgf_article_id'])
+        wp = calculate_weighted_price(
+            base_price=r['base_pu'],
+            base_date=eff_date,
+            devis_price=r['unit_price_ht'],
+            devis_date=devis_date,
+        )
+        computed_wp = wp.get('weighted_price')
+        computed_tt = wp
+    elif (
+        r.get('dpgf_article_id')
+        and r.get('unit_price_ht')
+        and not (r.get('base_pu') or 0)
+        and (r.get('mapping_score') or 0) >= 80
+        and (r.get('mapping_status') in ('auto', 'manual'))
+    ):
+        computed_wp = r.get('unit_price_ht')
+        computed_tt = {
+            'confidence': 'HIGH',
+            'mode': 'devis_only',
+            'note': 'PU base manquant → affichage PU devis',
+            'base_actualized': None,
+            'devis_actualized': r.get('unit_price_ht'),
+            'base_age_years': None,
+            'devis_age_years': None,
+            'base_weight': None,
+            'devis_weight': None,
+        }
+
+    overr = r.get('weighted_price_override')
+    if overr is not None and overr != '':
+        try:
+            ow = round(float(overr), 2)
+        except (TypeError, ValueError):
+            ow = None
+        if ow is not None and ow >= 0 and ow == ow:  # NaN guard
+            r['weighted_price'] = ow
+            r['wp_manual'] = True
+            tt = dict(computed_tt) if computed_tt else {
+                'confidence': 'NONE',
+                'base_actualized': None,
+                'devis_actualized': None,
+                'base_age_years': None,
+                'devis_age_years': None,
+                'base_weight': None,
+                'devis_weight': None,
+            }
+            tt['manual_override'] = True
+            tt['computed_weighted_price'] = computed_wp
+            prev_note = tt.get('note') or ''
+            tt['note'] = (prev_note + (' · ' if prev_note else '')) + 'PU calculé saisi manuellement.'
+            r['wp_tooltip'] = tt
+            if r.get('unit_price_ht'):
+                r['ecart_pct'] = round(
+                    (ow - r['unit_price_ht']) / r['unit_price_ht'] * 100, 1
+                )
+            else:
+                r['ecart_pct'] = None
+            return
+
+    r['weighted_price'] = computed_wp
+    r['wp_manual'] = False
+    r['wp_tooltip'] = computed_tt
+    r['ecart_pct'] = None
+    if computed_wp and r.get('unit_price_ht'):
+        r['ecart_pct'] = round(
+            (computed_wp - r['unit_price_ht']) / r['unit_price_ht'] * 100, 1
+        )
+
+
 @app.route('/matching')
 @app.route('/matching/<int:project_id>')
 def matching_view(project_id=None):
@@ -796,8 +1010,6 @@ def matching_view(project_id=None):
 
 @app.route('/api/matching/<int:project_id>/data')
 def matching_data(project_id):
-    from utils import calculate_weighted_price, get_effective_date
-
     conn = models.get_db()
     try:
         project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
@@ -811,11 +1023,13 @@ def matching_data(project_id):
             SELECT dl.id, dl.original_designation, dl.unit, dl.quantity,
                    dl.unit_price_ht, dl.total_ht, dl.mapping_status,
                    dl.mapping_score, dl.row_type, dl.context_path, dl.lot,
-                   dl.dpgf_article_id,
+                   dl.dpgf_article_id, dl.weighted_price_override,
                    da.designation  AS base_designation,
                    da.pu_ht_ref    AS base_pu,
                    da.unit         AS base_unit,
-                   da.last_updated AS base_last_updated
+                   da.last_updated AS base_last_updated,
+                   da.chapter      AS base_chapter,
+                   da.section      AS base_section
             FROM devis_lines dl
             LEFT JOIN dpgf_articles da ON dl.dpgf_article_id = da.id
             WHERE dl.project_id = ?
@@ -864,44 +1078,7 @@ def matching_data(project_id):
             lot    = (r.get('lot') or _derive_lot(chap)).upper()
             r['lot'] = lot
 
-            # Prix pondéré si ligne déjà mappée
-            r['weighted_price'] = None
-            r['wp_tooltip']     = None
-            r['ecart_pct']      = None
-            if r.get('dpgf_article_id') and r.get('unit_price_ht') and r.get('base_pu'):
-                eff_date = get_effective_date(conn, r['dpgf_article_id'])
-                wp = calculate_weighted_price(
-                    base_price=r['base_pu'],
-                    base_date=eff_date,
-                    devis_price=r['unit_price_ht'],
-                    devis_date=devis_date,
-                )
-                r['weighted_price'] = wp.get('weighted_price')
-                r['wp_tooltip']     = wp
-                if wp.get('weighted_price') and r['unit_price_ht']:
-                    r['ecart_pct'] = round(
-                        (wp['weighted_price'] - r['unit_price_ht']) / r['unit_price_ht'] * 100, 1
-                    )
-            # Fallback: si parsing bon mais PU base absent → on affiche directement le PU devis
-            elif (
-                r.get('dpgf_article_id')
-                and r.get('unit_price_ht')
-                and not (r.get('base_pu') or 0)
-                and (r.get('mapping_score') or 0) >= 80
-                and (r.get('mapping_status') in ('auto', 'manual'))
-            ):
-                r['weighted_price'] = r.get('unit_price_ht')
-                r['wp_tooltip'] = {
-                    'confidence': 'HIGH',
-                    'mode': 'devis_only',
-                    'note': 'PU base manquant → affichage PU devis',
-                    'base_actualized': None,
-                    'devis_actualized': r.get('unit_price_ht'),
-                    'base_age_years': None,
-                    'devis_age_years': None,
-                    'base_weight': None,
-                    'devis_weight': None,
-                }
+            _apply_matching_line_weighted_pricing(r, conn, devis_date)
 
             if chap not in chapters_map:
                 chapters_order.append(chap)
@@ -937,12 +1114,22 @@ def matching_data(project_id):
 
 @app.route('/api/matching/line/<int:line_id>/candidates')
 def matching_line_candidates(line_id):
-    from engine_matching import clean_designation_radical, find_best_match
+    import json
+    import time
+
+    from engine_matching import clean_designation_radical, find_best_match, resolve_dpgf_section
 
     conn = models.get_db()
     try:
         line = conn.execute(
-            "SELECT original_designation, unit, unit_price_ht, lot, context_path FROM devis_lines WHERE id=?",
+            """
+            SELECT dl.original_designation, dl.unit, dl.unit_price_ht, dl.lot, dl.context_path,
+                   dl.dpgf_article_id,
+                   da.chapter AS base_chapter, da.section AS base_section
+            FROM devis_lines dl
+            LEFT JOIN dpgf_articles da ON dl.dpgf_article_id = da.id
+            WHERE dl.id = ?
+            """,
             (line_id,),
         ).fetchone()
         if not line:
@@ -960,14 +1147,58 @@ def matching_line_candidates(line_id):
             devis_chapter=dch or None,
             devis_section=dsec or None,
         )
-        # Filtrage strict: si un sous-chapitre (section) est détecté, on ne propose
-        # que les articles de cette section (sinon, suggestions peu utiles).
+        n_after_find = len(candidates)
+        resolved_sec = None
+        filter_mode = "none"
+        # Filtrage par section DPGF : résolution fuzzy du libellé devis → section référentiel
         if dsec:
-            dsec_low = dsec.strip().lower()
-            candidates = [
-                c for c in candidates
-                if (c.get("section") or "").strip().lower() == dsec_low
-            ]
+            resolved_sec = resolve_dpgf_section(conn, lot, dsec)
+            if resolved_sec:
+                filter_mode = "resolved"
+                resolved_low = resolved_sec.strip().lower()
+                candidates = [
+                    c for c in candidates
+                    if (c.get("section") or "").strip().lower() == resolved_low
+                ]
+            else:
+                filter_mode = "no_resolve_skip_filter"
+        # #region agent log
+        _dbg_path = os.environ.get("ESTIMATION_DEBUG_LOG") or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "debug-b2b456.log"
+        )
+        try:
+            with open(_dbg_path, "a", encoding="utf-8") as _df:
+                _df.write(
+                    json.dumps(
+                        {
+                            "sessionId": "b2b456",
+                            "hypothesisId": "H_match",
+                            "location": "app.py:matching_line_candidates",
+                            "message": "section filter",
+                            "timestamp": int(time.time() * 1000),
+                            "data": {
+                                "line_id": line_id,
+                                "context_path": line["context_path"],
+                                "dch": dch,
+                                "dsec": dsec,
+                                "resolved_sec": resolved_sec,
+                                "filter_mode": filter_mode,
+                                "n_after_find": n_after_find,
+                                "n_final": len(candidates),
+                                "candidate_sections": [
+                                    (c.get("section") or "") for c in candidates[:8]
+                                ],
+                                "mapped_base_section": line["base_section"],
+                                "mapped_article_id": line["dpgf_article_id"],
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except OSError:
+            pass
+        # #endregion
         return jsonify({
             'candidates': candidates,
             'cleaned_designation': clean_designation_radical(raw_des),
@@ -978,6 +1209,8 @@ def matching_line_candidates(line_id):
                 'context_path': line['context_path'],
                 'chapter': dch or None,
                 'section': dsec or None,
+                'base_chapter': line['base_chapter'] or None,
+                'base_section': line['base_section'] or None,
             }
         })
     finally:
@@ -1191,7 +1424,8 @@ def matching_line_create_article(line_id):
         conn.execute(
             """
             UPDATE devis_lines
-            SET dpgf_article_id = ?, mapping_status = 'manual'
+            SET dpgf_article_id = ?, mapping_status = 'manual',
+                weighted_price_override = NULL
             WHERE id = ?
             """,
             (new_art_id, line_id),
@@ -1227,10 +1461,13 @@ def matching_line_create_article(line_id):
             result['wp_tooltip'] = wp
             result['base_designation'] = article['designation']
             result['base_pu'] = article['pu_ht_ref']
+            result['base_chapter'] = article['chapter'] or None
+            result['base_section'] = article['section'] or None
             if wp.get('weighted_price') and line2['unit_price_ht']:
                 result['ecart_pct'] = round(
                     (wp['weighted_price'] - line2['unit_price_ht']) / line2['unit_price_ht'] * 100, 1
                 )
+        result['wp_manual'] = False
 
         return jsonify(result)
     except Exception as exc:
@@ -1256,7 +1493,8 @@ def matching_line_select(line_id):
     try:
         conn.execute("""
             UPDATE devis_lines
-            SET dpgf_article_id = ?, mapping_status = 'manual'
+            SET dpgf_article_id = ?, mapping_status = 'manual',
+                weighted_price_override = NULL
             WHERE id = ?
         """, (dpgf_article_id, line_id))
 
@@ -1293,12 +1531,92 @@ def matching_line_select(line_id):
             result['wp_tooltip']       = wp
             result['base_designation'] = article['designation']
             result['base_pu']          = article['pu_ht_ref']
+            result['base_chapter']     = article['chapter'] or None
+            result['base_section']     = article['section'] or None
             if wp.get('weighted_price') and line['unit_price_ht']:
                 result['ecart_pct'] = round(
                     (wp['weighted_price'] - line['unit_price_ht']) / line['unit_price_ht'] * 100, 1
                 )
+        result['wp_manual'] = False
 
         return jsonify(result)
+    except Exception as exc:
+        conn.rollback()
+        return jsonify({'error': str(exc)}), 500
+    finally:
+        conn.close()
+
+
+@app.route('/api/matching/line/<int:line_id>/weighted_price', methods=['POST'])
+def matching_line_weighted_price(line_id):
+    """Sauvegarde ou efface le PU calculé (pondéré) manuel pour une ligne devis."""
+    data = request.get_json(force=True) or {}
+    raw_val = data.get('weighted_price')
+
+    conn = models.get_db()
+    try:
+        chk = conn.execute(
+            "SELECT id, mapping_status, project_id FROM devis_lines WHERE id=?",
+            (line_id,),
+        ).fetchone()
+        if not chk:
+            return jsonify({'error': 'Ligne introuvable'}), 404
+        if chk['mapping_status'] == 'excluded':
+            return jsonify({'error': 'Ligne exclue — PU calculé non modifiable.'}), 400
+
+        if raw_val is None or (isinstance(raw_val, str) and not str(raw_val).strip()):
+            conn.execute(
+                "UPDATE devis_lines SET weighted_price_override=NULL WHERE id=?",
+                (line_id,),
+            )
+        else:
+            try:
+                v = float(raw_val)
+            except (TypeError, ValueError):
+                return jsonify({'error': 'PU calculé : nombre invalide.'}), 400
+            if v < 0 or v != v:
+                return jsonify({'error': 'PU calculé : nombre invalide.'}), 400
+            conn.execute(
+                "UPDATE devis_lines SET weighted_price_override=? WHERE id=?",
+                (round(v, 4), line_id),
+            )
+
+        conn.commit()
+
+        row = conn.execute(
+            """
+            SELECT dl.id, dl.project_id, dl.original_designation, dl.unit, dl.quantity,
+                   dl.unit_price_ht, dl.total_ht, dl.mapping_status,
+                   dl.mapping_score, dl.row_type, dl.context_path, dl.lot,
+                   dl.dpgf_article_id, dl.weighted_price_override,
+                   da.designation  AS base_designation,
+                   da.pu_ht_ref    AS base_pu,
+                   da.unit         AS base_unit,
+                   da.last_updated AS base_last_updated,
+                   da.chapter      AS base_chapter,
+                   da.section      AS base_section
+            FROM devis_lines dl
+            LEFT JOIN dpgf_articles da ON dl.dpgf_article_id = da.id
+            WHERE dl.id=?
+            """,
+            (line_id,),
+        ).fetchone()
+        proj = conn.execute(
+            "SELECT devis_date FROM projects WHERE id=?",
+            (row['project_id'],),
+        ).fetchone()
+        r = dict(row)
+        _apply_matching_line_weighted_pricing(r, conn, proj['devis_date'] if proj else None)
+
+        return jsonify(
+            {
+                'status': 'ok',
+                'weighted_price': r.get('weighted_price'),
+                'wp_tooltip': r.get('wp_tooltip'),
+                'ecart_pct': r.get('ecart_pct'),
+                'wp_manual': bool(r.get('wp_manual')),
+            }
+        )
     except Exception as exc:
         conn.rollback()
         return jsonify({'error': str(exc)}), 500

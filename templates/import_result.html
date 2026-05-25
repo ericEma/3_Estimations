@@ -1,18 +1,13 @@
 {% extends "base.html" %}
-{% block title %}Résultat Import{% endblock %}
+{% block title %}Résultat import{% endblock %}
+{% block page_subtitle %}Résultat import{% endblock %}
 
-{% block topbar %}
-<div class="topbar">
-  <div style="display:flex;align-items:center;gap:12px">
-    <a href="{{ url_for('import_page') }}" style="color:var(--text-muted);font-size:13px">← Import</a>
-    <span class="topbar-title">Résultat de l'import</span>
-    <span class="topbar-sub">{{ filename }}</span>
-  </div>
-</div>
+{% block header_actions %}
+<a class="h-home" href="{{ url_for('import_page') }}">← Import</a>
 {% endblock %}
 
 {% block content %}
-<div class="content" style="max-width:860px">
+<div class="page-panel" style="max-width:860px">
 
   <div class="card">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
