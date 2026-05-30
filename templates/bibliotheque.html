@@ -1,125 +1,207 @@
-{% extends "base.html" %}
-{% block title %}Base de prix{% endblock %}
-{% block page_subtitle %}Base de prix{% endblock %}
-{% block body_class %} bibl-content-page{% endblock %}
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Base de prix — {{ profile_labels.get(price_profile, price_profile) }} — Egis Elec-Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="bibl-page">
+<div id="root">
 
-{% block header_extra %}
-<div class="h-sep"></div>
-<div class="sdo-group">
-  <span class="sdo-lbl">SDO</span>
-  <input class="sdo-inp" id="sdo-inp" type="number" min="0" step="100"
-         value="{{ affaire_courante.surface_sdo | int if affaire_courante else 1000 }}">
-  <span class="sdo-unit">m²</span>
-</div>
-<div class="h-sep"></div>
-<div class="sdo-group">
-  <span class="sdo-lbl">Puissance PV</span>
-  <input class="sdo-inp kwc-inp" id="kwc-inp" type="number" min="0" step="10"
-         value="{{ (affaire_courante.puissance_pv_kwc or 100) | int if affaire_courante else 100 }}"
-         title="Puissance PV installée — diviseur des ratios €/kWc du chapitre Photovoltaïque">
-  <span class="sdo-unit">kWc</span>
-</div>
-{% if affaire_courante %}
-<span class="phase-badge">{{ affaire_courante.phase_etude or 'APD' }}</span>
-{% endif %}
-{% endblock %}
-
-{% block content %}
-<div class="kpi-strip">
-  <div class="kpi cfo">
-    <div class="kpi-lbl">Courants Forts</div>
-    <div class="kpi-val" id="kpi-cfo">—<small>€ HT</small></div>
-    <div class="kpi-sub" id="kpi-cfo-m2">— €/m²</div>
-  </div>
-  <div class="kpi cfa">
-    <div class="kpi-lbl">Courants Faibles</div>
-    <div class="kpi-val" id="kpi-cfa">—<small>€ HT</small></div>
-    <div class="kpi-sub" id="kpi-cfa-m2">— €/m²</div>
-  </div>
-  <div class="kpi pv">
-    <div class="kpi-lbl">Photovoltaïque</div>
-    <div class="kpi-val" id="kpi-pv">—<small>€ HT</small></div>
-    <div class="kpi-sub" id="kpi-pv-m2">— €/kWc</div>
-  </div>
-  <div class="kpi">
-    <div class="kpi-lbl">Total HT estimé</div>
-    <div class="kpi-val" id="kpi-total">—<small>€ HT</small></div>
-    <div class="kpi-sub" id="kpi-total-m2">— €/m²</div>
-  </div>
-</div>
-
-<div class="tbar">
-  <span class="tbar-title" id="tbar-title">
-    {% if affaire_courante %}{{ affaire_courante.name }}{% else %}Référentiel DPGF{% endif %}
-    — {{ nb_articles }} articles · {{ nb_chapitres }} chapitres
-  </span>
-  <div class="search-wrap">
-    <svg class="search-ico" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l3 3"/></svg>
-    <input class="search-inp" id="search-inp" type="text" placeholder="Rechercher…">
-  </div>
-  <button class="btn btn-outlined" type="button" onclick="setExpandAll(true)">
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M2 4h12M2 8h8M2 12h5"/><path d="M11 9l3 3-3 3"/></svg>
-    Tout ouvrir
-  </button>
-  <button class="btn btn-outlined" type="button" onclick="setExpandAll(false)">
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M2 4h12M2 8h8M2 12h5"/><path d="M14 9l-3 3 3 3"/></svg>
-    Tout fermer
-  </button>
-  <span class="tt-count" id="art-count"></span>
-</div>
-
-<div class="grid-panel-wrap">
-  <div class="grid-wrap" id="grid-wrap">
-    <table class="tree-table" id="tree-table">
-      <colgroup><col><col><col><col><col><col><col></colgroup>
-      <thead>
-        <tr>
-          <th></th>
-          <th>Désignation</th>
-          <th class="r">Unité</th>
-          <th class="r">Quantité</th>
-          <th class="r">PU HT</th>
-          <th class="r">Total HT</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody id="tree-body">
-        <tr><td colspan="7"><div class="empty-state"><div class="empty-ico">⏳</div><div>Chargement…</div></div></td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="rpanel closed" id="rpanel">
-    <div class="rp-hd">
-      <div class="rp-hd-title">Inspecteur</div>
-      <button class="rp-close-btn" type="button" onclick="closePanel()">
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg>
-      </button>
+  <div class="app-header">
+    <a class="logo" href="{{ url_for('index') }}">
+      <div class="logo-mark">EE</div>
+      <div>
+        <div class="logo-name">Egis Elec-Explorer</div>
+        <div class="logo-sub">Base de prix — {{ profile_labels.get(price_profile, price_profile) }}</div>
+      </div>
+    </a>
+    <div class="h-sep"></div>
+    <div class="sdo-group">
+      <span class="sdo-lbl">SDO</span>
+      <input class="sdo-inp" id="sdo-inp" type="number" min="0" step="100"
+             value="{{ affaire_courante.surface_sdo | int if affaire_courante else 1000 }}">
+      <span class="sdo-unit">m²</span>
     </div>
-    <div class="rp-empty" id="rp-empty">
-      <div class="rp-empty-ico">⚡</div>
-      <div class="rp-empty-txt">Cliquez sur un article pour consulter son détail.</div>
+    <div class="h-sep"></div>
+    <div class="sdo-group">
+      <span class="sdo-lbl">Puissance PV</span>
+      <input class="sdo-inp kwc-inp" id="kwc-inp" type="number" min="0" step="10"
+             value="{{ (affaire_courante.puissance_pv_kwc or 100) | int if affaire_courante else 100 }}"
+             title="Puissance PV installée — diviseur des ratios €/kWc du chapitre Photovoltaïque">
+      <span class="sdo-unit">kWc</span>
     </div>
-    <div class="rp-scroll" id="rp-content" style="display:none"></div>
+    {% if affaire_courante %}
+    <span class="phase-badge">{{ affaire_courante.phase_etude or 'APD' }}</span>
+    {% endif %}
+    <div class="h-spacer"></div>
+    <a class="h-home" href="{{ url_for('index') }}">← Dashboard</a>
   </div>
-</div>
-{% endblock %}
 
-{% block page_footer %}
-<div class="statusbar">
-  <div class="sb-dot"></div>
-  <span>Référentiel PSA · {{ nb_articles }} articles · {{ nb_chapitres }} chapitres · {{ nb_sections }} sections</span>
-  <span id="statusbar-ctx">{% if affaire_courante %}Affaire : {{ affaire_courante.name }} · SDO {{ affaire_courante.surface_sdo | int }} m²{% else %}Mode référentiel — aucune affaire sélectionnée{% endif %}</span>
-</div>
-{% endblock %}
+  <div class="app-shell">
 
-{% block scripts %}
+    <div class="sidebar">
+      <div class="sb-sec">
+        <div class="sb-lbl">Navigation</div>
+        <a class="sb-nav on" href="{{ url_for('bibliotheque', profil=price_profile) }}">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M5 5h6M5 8h6M5 11h3"/></svg>
+          Base de prix
+          <span class="sb-count">{{ nb_articles }}</span>
+        </a>
+        <a class="sb-nav" href="{{ url_for('index') }}">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="1" y="3" width="14" height="11" rx="1.5"/><path d="M5 3V2M11 3V2M1 7h14"/></svg>
+          Mes affaires
+        </a>
+        <a class="sb-nav" href="{{ url_for('import_page') }}">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 2v8M5 7l3 3 3-3M3 13h10"/></svg>
+          Import devis
+        </a>
+        <a class="sb-nav" href="{{ url_for('matching_view') }}">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3l2 2"/></svg>
+          Revue matching
+        </a>
+      </div>
+      <div class="sb-divider"></div>
+      <div class="sb-sec">
+        <div class="sb-lbl">Profil base de prix</div>
+        {% for key, label in profile_labels.items() %}
+        <a class="sb-all {% if price_profile == key %}on{% endif %}"
+           href="{{ url_for('bibliotheque', profil=key) }}">
+          {{ label }}
+        </a>
+        {% endfor %}
+      </div>
+      <div class="sb-divider"></div>
+      <div class="sb-sec">
+        <div class="sb-lbl">Contexte affaire</div>
+        <a class="sb-all {% if not affaire_id %}on{% endif %}"
+           href="{{ url_for('bibliotheque', profil=price_profile) }}">
+          ○ Référentiel seul
+        </a>
+        {% for a in affaires %}
+        <a class="aff-item {% if a.id == affaire_id %}on{% endif %}"
+           href="{{ url_for('bibliotheque', affaire_id=a.id, profil=price_profile) }}">
+          <div class="aff-name">{{ a.name }}</div>
+          <div class="aff-meta">{{ a.surface_sdo | int }} m² · {{ a.phase_etude or '—' }}</div>
+        </a>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="main">
+
+      <div class="kpi-strip">
+        <div class="kpi cfo">
+          <div class="kpi-lbl">Courants Forts</div>
+          <div class="kpi-val" id="kpi-cfo">—<small>€ HT</small></div>
+          <div class="kpi-sub" id="kpi-cfo-m2">— €/m²</div>
+        </div>
+        <div class="kpi cfa">
+          <div class="kpi-lbl">Courants Faibles</div>
+          <div class="kpi-val" id="kpi-cfa">—<small>€ HT</small></div>
+          <div class="kpi-sub" id="kpi-cfa-m2">— €/m²</div>
+        </div>
+        <div class="kpi pv">
+          <div class="kpi-lbl">Photovoltaïque</div>
+          <div class="kpi-val" id="kpi-pv">—<small>€ HT</small></div>
+          <div class="kpi-sub" id="kpi-pv-m2">— €/kWc</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-lbl">Total HT estimé</div>
+          <div class="kpi-val" id="kpi-total">—<small>€ HT</small></div>
+          <div class="kpi-sub" id="kpi-total-m2">— €/m²</div>
+        </div>
+      </div>
+
+      <div class="tbar">
+        <span class="tbar-title" id="tbar-title">
+          {% if affaire_courante %}{{ affaire_courante.name }} · {% endif %}{{ profile_labels.get(price_profile, price_profile) }}
+          — {{ nb_articles }} articles · {{ nb_chapitres }} chapitres
+        </span>
+        <div class="search-wrap">
+          <svg class="search-ico" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l3 3"/></svg>
+          <input class="search-inp" id="search-inp" type="text" placeholder="Rechercher…">
+        </div>
+        <button class="btn btn-outlined" type="button" onclick="setExpandAll(true)">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M2 4h12M2 8h8M2 12h5"/><path d="M11 9l3 3-3 3"/></svg>
+          Tout ouvrir
+        </button>
+        <button class="btn btn-outlined" type="button" onclick="setExpandAll(false)">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M2 4h12M2 8h8M2 12h5"/><path d="M14 9l-3 3 3 3"/></svg>
+          Tout fermer
+        </button>
+        <span class="tt-count" id="art-count"></span>
+      </div>
+
+      <div class="grid-panel-wrap">
+        <div class="grid-wrap" id="grid-wrap">
+          <table class="tree-table" id="tree-table">
+            <colgroup><col><col><col><col><col><col><col></colgroup>
+            <thead>
+              <tr>
+                <th></th>
+                <th>Désignation</th>
+                <th class="r">Unité</th>
+                <th class="r">Quantité</th>
+                <th class="r">PU HT</th>
+                <th class="r">Total HT</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="tree-body">
+              <tr><td colspan="7"><div class="empty-state"><div class="empty-ico">⏳</div><div>Chargement…</div></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="rpanel closed" id="rpanel">
+          <div class="rp-hd">
+            <div class="rp-hd-title">Inspecteur</div>
+            <button class="rp-close-btn" type="button" onclick="closePanel()">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg>
+            </button>
+          </div>
+          <div class="rp-empty" id="rp-empty">
+            <div class="rp-empty-ico">⚡</div>
+            <div class="rp-empty-txt">Cliquez sur un article pour consulter son détail.</div>
+          </div>
+          <div class="rp-scroll" id="rp-content" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <div class="sb-dot"></div>
+    <span>Référentiel PSA · {{ nb_articles }} articles · {{ nb_chapitres }} chapitres · {{ nb_sections }} sections</span>
+    <span id="statusbar-ctx">
+      Base {{ profile_labels.get(price_profile, price_profile) }}
+      {% if affaire_courante %} · Affaire : {{ affaire_courante.name }} · SDO {{ affaire_courante.surface_sdo | int }} m²
+      {% else %} · Mode référentiel (édition directe){% endif %}
+    </span>
+  </div>
+
+</div>
+
 <script>
+(function() {
+  function sendHeartbeat() {
+    fetch('/api/heartbeat', { method: 'POST', keepalive: true }).catch(() => {});
+  }
+  sendHeartbeat();
+  setInterval(sendHeartbeat, 3000);
+})();
+
 const ARTICLES    = {{ articles_json | safe }};
 const SEC_RATIOS  = {{ sec_ratios_json | safe }};
 const AFFAIRE_ID  = {{ affaire_id or 'null' }};
+const PRICE_PROFILE = {{ (price_profile or 'autres') | tojson }};
 const INIT_SDO    = {{ affaire_courante.surface_sdo | int if affaire_courante else 1000 }};
 const INIT_KWC    = {{ (affaire_courante.puissance_pv_kwc or 100) | int if affaire_courante else 100 }};
 </script>
 <script src="{{ url_for('static', filename='js/bibliotheque.js') }}"></script>
-{% endblock %}
+</body>
+</html>

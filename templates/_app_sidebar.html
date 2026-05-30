@@ -43,7 +43,7 @@
     </a>
 
     <a class="sb-nav {% if ep == 'bibliotheque' %}on{% endif %}"
-       href="{{ url_for('bibliotheque') }}">
+       href="{{ url_for('bibliotheque', profil=request.args.get('profil', 'autres')) }}">
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M5 5h6M5 8h6M5 11h3"/></svg>
       <span class="sb-nav-text-col">
         <span>Base de prix</span>

@@ -60,8 +60,8 @@ def get_section_sort_map(conn: sqlite3.Connection, affaire_id: int) -> dict:
 
 
 def handle_layout_action(affaire_id: int, action: str, data: dict) -> dict:
-    """Actions : add_section, add_article, delete_section, move_section, move_article."""
-    conn = get_db()
+    """Actions : add_section, add_article, delete_section, delete_article, move_section, move_article."""
+    conn = get_db(affaire_id=affaire_id)
     try:
         _verify_foreign_keys_enabled(conn)
         aff = conn.execute(
@@ -76,6 +76,8 @@ def handle_layout_action(affaire_id: int, action: str, data: dict) -> dict:
             out = _add_article(conn, affaire_id, data)
         elif action == "delete_section":
             out = _delete_section(conn, affaire_id, data)
+        elif action == "delete_article":
+            out = _delete_article(conn, affaire_id, data)
         elif action == "move_section":
             out = _move_section(conn, affaire_id, data)
         elif action == "move_article":
@@ -341,6 +343,9 @@ def _add_article(conn, affaire_id: int, data: dict) -> dict:
 def _delete_section(conn, affaire_id: int, data: dict) -> dict:
     chapter = (data.get("chapter") or "").strip()
     section = (data.get("section") or "").strip()
+    if not chapter or not section:
+        raise ValueError("Chapitre et section requis")
+
     key = f"sect:{chapter}|{section}"
     row = conn.execute(
         """
@@ -349,12 +354,20 @@ def _delete_section(conn, affaire_id: int, data: dict) -> dict:
         """,
         (affaire_id, key),
     ).fetchone()
-    if not row or not int(row["is_local"] or 0):
-        raise ValueError("Seules les sections créées sur cette affaire peuvent être supprimées")
+    is_local = bool(row and int(row["is_local"] or 0))
 
     conn.execute(
-        "DELETE FROM affaire_lines WHERE affaire_id = ? AND line_chapter = ? AND line_section = ?",
-        (affaire_id, chapter, section),
+        """
+        DELETE FROM affaire_lines
+        WHERE affaire_id = ?
+          AND (
+            (line_chapter = ? AND line_section = ?)
+            OR dpgf_article_id IN (
+                SELECT id FROM dpgf_articles WHERE chapter = ? AND section = ?
+            )
+          )
+        """,
+        (affaire_id, chapter, section, chapter, section),
     )
     conn.execute(
         """
@@ -367,7 +380,37 @@ def _delete_section(conn, affaire_id: int, data: dict) -> dict:
         "DELETE FROM affaire_chapter_settings WHERE affaire_id = ? AND chapter_key = ?",
         (affaire_id, key),
     )
-    return {"deleted_section": section}
+    return {"deleted_section": section, "is_local": is_local}
+
+
+def _delete_article(conn, affaire_id: int, data: dict) -> dict:
+    dpgf_id = data.get("dpgf_id")
+    line_id = data.get("line_id")
+    if dpgf_id not in (None, "", False):
+        conn.execute(
+            """
+            DELETE FROM affaire_lines
+            WHERE affaire_id = ? AND dpgf_article_id = ?
+            """,
+            (affaire_id, int(dpgf_id)),
+        )
+        return {"deleted_dpgf_id": int(dpgf_id)}
+    if line_id not in (None, "", False):
+        row = conn.execute(
+            """
+            SELECT id FROM affaire_lines
+            WHERE id = ? AND affaire_id = ?
+            """,
+            (int(line_id), affaire_id),
+        ).fetchone()
+        if not row:
+            raise ValueError("Ligne introuvable")
+        conn.execute(
+            "DELETE FROM affaire_lines WHERE id = ? AND affaire_id = ?",
+            (int(line_id), affaire_id),
+        )
+        return {"deleted_line_id": int(line_id)}
+    raise ValueError("dpgf_id ou line_id requis")
 
 
 def _move_section(conn, affaire_id: int, data: dict) -> dict:

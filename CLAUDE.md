@@ -1,6 +1,6 @@
 # CLAUDE.md — Estimation Élec (Egis)
 > Fichier unique de démarrage de session. Remplace la lecture de instructions.md + CURRENT_STATE.md.
-> Mise à jour : 2026-05-25 — **État sauvegardé** : fiche ratios globaux, estimation snapshot/layout, bibliothèque réordonnable, garde-fous
+> Mise à jour : 2026-05-30 — **État sauvegardé** : multi-BDD profils, bibliothèque autonome, scroll matching, sauvegarde hebdo
 
 ---
 
@@ -336,3 +336,26 @@ node --check static/js/bibliotheque.js
 ### Règle Git — bases SQLite
 - À partir du 2026-05-25, les bases SQLite du projet sont aussi sauvegardées dans Git : `estimation_elec.db` et, si présent, `estimation.db`.
 - Les fichiers Excel, captures PNG et backups locaux restent hors commit sauf demande explicite.
+
+---
+
+## 16. État sauvegardé 2026-05-30 — Ne pas casser
+
+### Fonctionnalités validées Eric
+- **Multi-BDD par profil** : `estimation_hopitaux.db`, `estimation_industriel.db`, `estimation_autres.db` + `db_profiles.py` (catégorie bâtiment → profil). Liens affaires : `?profil=` obligatoire (ids non uniques entre fichiers).
+- **Dashboard** : filtre Tous | Hôpitaux | Industriel | Autres.
+- **Bibliothèque** : page autonome `bibl-page` (layout type worktree), switch profil base de prix, `PRICE_PROFILE` dans les saves JS.
+- **Matching** : scroll sur `.page-body` (`overflow-y: auto`), en-tête `.mv-header` sticky — ne pas remettre le scroll uniquement sur `.mv-body` en flex imbriqué.
+- **Snapshot affaire** : `ensure_estimation_snapshot(affaire_id, profile)` + réparation auto si affaire sans lignes (ids dupliqués entre BDD clonées).
+- **Sauvegarde** : `scripts/backup_db.py`, `Planifier_Sauvegarde_Hebdo.bat`, lanceurs `.bat`/`.vbs` mis à jour.
+
+### Tests garde-fous (compléter §15)
+```bash
+python -m unittest tests.test_db_profiles tests.test_affaire_preview_ratios tests.test_estimation_snapshot tests.test_estimation_promote tests.test_bibliotheque_section_move tests.test_backup_db -v
+node --check static/js/affaire_estimation.js
+node --check static/js/bibliotheque.js
+```
+
+### Prochaine priorité
+- Export Excel page Estimation (snapshot/layout réel).
+- Feedback visuel `saving…` sur autosaves.

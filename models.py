@@ -11,7 +11,27 @@ import os
 from datetime import date, datetime
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(PROJECT_DIR, "estimation_elec.db")
+
+from db_profiles import (  # noqa: E402
+    PROFILES,
+    PROFILE_LABELS,
+    DEFAULT_PROFILE,
+    normalize_profile,
+    normalize_profile_filter,
+    get_db_path,
+    find_affaire_profile,
+    find_project_profile,
+    find_devis_line_profile,
+    find_dpgf_article_profile,
+    profile_for_category_name,
+    resolve_profile_from_category_id,
+    legacy_db_path,
+    connect as _connect_profile,
+    profiles_to_migrate,
+)
+
+LEGACY_DB_PATH = str(legacy_db_path())
+DB_PATH = str(get_db_path(DEFAULT_PROFILE))
 
 # Type de système PV — coef relatif sur le lot (fiche affaire / estimation prévisionnelle)
 PV_SYSTEM_TYPES = {
@@ -39,11 +59,36 @@ def optional_positive_float(value):
     return v if v > 0 else None
 
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+def get_db(
+    profile: str | None = None,
+    *,
+    affaire_id: int | None = None,
+    project_id: int | None = None,
+    line_id: int | None = None,
+    article_id: int | None = None,
+    prefer_profile: str | None = None,
+):
+    """Connexion SQLite du profil métier (hopitaux / industriel / autres)."""
+    if profile is None:
+        if affaire_id is not None:
+            profile = find_affaire_profile(affaire_id, prefer=prefer_profile)
+        elif project_id is not None:
+            profile = find_project_profile(project_id)
+        elif line_id is not None:
+            profile = find_devis_line_profile(line_id)
+        elif article_id is not None:
+            profile = find_dpgf_article_profile(article_id)
+    return _connect_profile(profile)
+
+
+def _migrate_price_profile_column(conn: sqlite3.Connection) -> None:
+    for table in ("affaires", "projects"):
+        cols = {c[1] for c in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if "price_profile" not in cols:
+            conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN price_profile TEXT NOT NULL DEFAULT 'autres'"
+            )
+    conn.commit()
 
 
 def _verify_foreign_keys_enabled(conn: sqlite3.Connection) -> None:
@@ -411,8 +456,17 @@ def _migrate_devis_lines_excluded_status(conn: sqlite3.Connection) -> None:
 
 
 def ensure_app_tables():
-    """Crée les tables spécifiques à l'application web si absentes."""
-    conn = get_db()
+    """Crée les tables spécifiques à l'application web si absentes (chaque BDD profil)."""
+    for prof in profiles_to_migrate():
+        conn = get_db(prof)
+        try:
+            _ensure_app_tables_on_conn(conn)
+            _migrate_price_profile_column(conn)
+        finally:
+            conn.close()
+
+
+def _ensure_app_tables_on_conn(conn: sqlite3.Connection) -> None:
     try:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS affaires (
@@ -604,14 +658,17 @@ def ensure_app_tables():
 
         _migrate_devis_lines_excluded_status(conn)
     finally:
-        conn.close()
+        pass
 
 
 # ─── AFFAIRES ─────────────────────────────────────────────────────────────────
 
-def save_total_estime(affaire_id: int, total: float):
+def save_total_estime(affaire_id: int, total: float, profile: str | None = None):
     """Sauvegarde le total HT effectif (ratio fallback inclus) pour affichage dashboard."""
-    conn = get_db()
+    prof = normalize_profile(profile) if profile else find_affaire_profile(affaire_id)
+    if not prof:
+        return
+    conn = get_db(prof, prefer_profile=prof)
     try:
         conn.execute(
             "UPDATE affaires SET total_estime_ht = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -634,57 +691,86 @@ def snap_complexity_coef(value) -> float:
     return min(COMPLEXITY_COEFS, key=lambda c: abs(c - v))
 
 
-def get_base_price_last_updated() -> str | None:
+def get_base_price_last_updated(profile: str | None = None) -> str | None:
     """Date (JJ-MM-AAAA) de la dernière modification de prix en base DPGF."""
-    conn = get_db()
-    try:
-        row = conn.execute("""
-            SELECT MAX(dt) FROM (
-                SELECT MAX(last_updated) AS dt
-                FROM dpgf_articles
-                WHERE COALESCE(is_hidden, 0) = 0
-                  AND last_updated IS NOT NULL
-                UNION ALL
-                SELECT MAX(date(created_at)) AS dt
-                FROM ratio_overrides
-                WHERE created_at IS NOT NULL
-            )
-        """).fetchone()
-        raw = row[0] if row else None
-        if not raw:
-            return None
-        s = str(raw)[:10]
-        parts = s.split('-')
-        if len(parts) == 3:
-            return f"{parts[2]}-{parts[1]}-{parts[0]}"
-        return s
-    finally:
-        conn.close()
+    targets = [normalize_profile(profile)] if profile else list(PROFILES)
+    best_raw = None
+    for p in targets:
+        conn = get_db(p)
+        try:
+            row = conn.execute("""
+                SELECT MAX(dt) FROM (
+                    SELECT MAX(last_updated) AS dt
+                    FROM dpgf_articles
+                    WHERE COALESCE(is_hidden, 0) = 0
+                      AND last_updated IS NOT NULL
+                    UNION ALL
+                    SELECT MAX(date(created_at)) AS dt
+                    FROM ratio_overrides
+                    WHERE created_at IS NOT NULL
+                )
+            """).fetchone()
+            raw = row[0] if row else None
+            if raw and (best_raw is None or str(raw) > str(best_raw)):
+                best_raw = raw
+        finally:
+            conn.close()
+    if not best_raw:
+        return None
+    s = str(best_raw)[:10]
+    parts = s.split('-')
+    if len(parts) == 3:
+        return f"{parts[2]}-{parts[1]}-{parts[0]}"
+    return s
 
 
-def get_affaires() -> list:
-    conn = get_db()
-    try:
-        rows = conn.execute("""
-            SELECT a.*,
-                   bc.name as category_name,
-                   COALESCE(
-                     a.total_estime_ht,
-                     (SELECT SUM(al.total_ht) FROM affaire_lines al
-                      WHERE al.affaire_id = a.id AND al.is_included = 1),
-                     0
-                   ) as total_ht
-            FROM affaires a
-            LEFT JOIN building_categories bc ON a.category_id = bc.id
-            ORDER BY a.updated_at DESC
-        """).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
+_AFFAIRE_LIST_SQL = """
+    SELECT a.*,
+           bc.name as category_name,
+           COALESCE(
+             a.total_estime_ht,
+             (SELECT SUM(al.total_ht) FROM affaire_lines al
+              WHERE al.affaire_id = a.id AND al.is_included = 1),
+             0
+           ) as total_ht
+    FROM affaires a
+    LEFT JOIN building_categories bc ON a.category_id = bc.id
+"""
 
 
-def get_affaire(affaire_id: int) -> dict | None:
-    conn = get_db()
+def get_affaires(profile_filter: str | None = "tous") -> list:
+    filt = normalize_profile_filter(profile_filter)
+    scan = list(PROFILES) if filt == "tous" else [filt]
+    out: list = []
+    for p in scan:
+        conn = get_db(p)
+        try:
+            rows = conn.execute(
+                _AFFAIRE_LIST_SQL + " ORDER BY a.updated_at DESC"
+            ).fetchall()
+            for r in rows:
+                d = dict(r)
+                d["price_profile"] = p
+                if not d.get("estimation_initialized_at"):
+                    ensure_estimation_snapshot(int(d["id"]), p)
+                    try:
+                        d["total_ht"] = compute_estimation_kpis(
+                            int(d["id"]), profile=p
+                        ).get("ALL", 0)
+                    except Exception:
+                        pass
+                out.append(d)
+        finally:
+            conn.close()
+    out.sort(key=lambda a: (a.get("updated_at") or ""), reverse=True)
+    return out
+
+
+def get_affaire(affaire_id: int, profile: str | None = None) -> dict | None:
+    prof = normalize_profile(profile) if profile else find_affaire_profile(affaire_id)
+    if not prof:
+        return None
+    conn = get_db(prof, prefer_profile=prof)
     try:
         r = conn.execute("""
             SELECT a.*, bc.name as category_name
@@ -692,13 +778,18 @@ def get_affaire(affaire_id: int) -> dict | None:
             LEFT JOIN building_categories bc ON a.category_id = bc.id
             WHERE a.id = ?
         """, (affaire_id,)).fetchone()
-        return dict(r) if r else None
+        if not r:
+            return None
+        d = dict(r)
+        d["price_profile"] = prof
+        return d
     finally:
         conn.close()
 
 
-def create_affaire(data: dict) -> int:
-    conn = get_db()
+def create_affaire(data: dict) -> tuple[int, str]:
+    profile = resolve_profile_from_category_id(data.get("category_id"))
+    conn = get_db(profile)
     try:
         cur = conn.execute("""
             INSERT INTO affaires
@@ -708,8 +799,8 @@ def create_affaire(data: dict) -> int:
                coef_risque, taux_marge,
                kva_cible, puissance_pv_kwc, pv_system_type,
                phase_etude, taux_incertitude, taux_phase,
-               notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               notes, price_profile)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data.get('name', 'Nouvelle Affaire'),
             data.get('client'),
@@ -731,11 +822,12 @@ def create_affaire(data: dict) -> int:
             float(data.get('taux_incertitude', 3.0)),
             float(data.get('taux_phase',        3.0)),
             data.get('notes'),
+            profile,
         ))
         conn.commit()
         affaire_id = cur.lastrowid
-        initialize_estimation_snapshot(affaire_id)
-        return affaire_id
+        ensure_estimation_snapshot(affaire_id, profile)
+        return affaire_id, profile
     finally:
         conn.close()
 
@@ -745,9 +837,26 @@ def _is_pv_chapter_name(chapter: str | None) -> bool:
     return "photov" in c
 
 
-def is_estimation_initialized(affaire_id: int) -> bool:
-    affaire = get_affaire(affaire_id)
+def is_estimation_initialized(affaire_id: int, profile: str | None = None) -> bool:
+    affaire = get_affaire(affaire_id, profile=profile)
     return bool(affaire and affaire.get("estimation_initialized_at"))
+
+
+def ensure_estimation_snapshot(affaire_id: int, profile: str | None = None) -> int:
+    """Initialise le snapshot si absent, puis enregistre le total dashboard."""
+    prof = normalize_profile(profile) if profile else find_affaire_profile(affaire_id)
+    if not prof:
+        return 0
+    inserted = 0
+    if not is_estimation_initialized(affaire_id, profile=prof):
+        inserted = initialize_estimation_snapshot(affaire_id, profile=prof)
+    if is_estimation_initialized(affaire_id, profile=prof):
+        try:
+            kpis = compute_estimation_kpis(affaire_id, profile=prof)
+            save_total_estime(affaire_id, kpis.get("ALL", 0), profile=prof)
+        except Exception:
+            pass
+    return inserted
 
 
 def _snapshot_pu_from_bibliotheque(
@@ -769,7 +878,7 @@ def _snapshot_pu_from_bibliotheque(
     return _round_money2(ap) if ap > 0 else 0.0
 
 
-def initialize_estimation_snapshot(affaire_id: int) -> int:
+def initialize_estimation_snapshot(affaire_id: int, profile: str | None = None) -> int:
     """Copie la base de prix affichée en bibliothèque dans ``affaire_lines`` à la création.
 
     - PU figés dans ``ratio_ref`` (+ ``unit_price_ht`` si > 0) — pas de resync ensuite.
@@ -777,7 +886,10 @@ def initialize_estimation_snapshot(affaire_id: int) -> int:
     - Sections avec ratio manuel biblio → ``use_macro`` + ``ratio_m2_override``.
     - Articles des sections macro : qty = 0 jusqu'à saisie détail.
     """
-    affaire = get_affaire(affaire_id)
+    profile = normalize_profile(profile) if profile else find_affaire_profile(affaire_id)
+    if not profile:
+        return 0
+    affaire = get_affaire(affaire_id, profile=profile)
     if not affaire:
         return 0
     if affaire.get("estimation_initialized_at"):
@@ -797,7 +909,7 @@ def initialize_estimation_snapshot(affaire_id: int) -> int:
     except Exception:
         ratios_map = {}
 
-    conn = get_db()
+    conn = get_db(profile, prefer_profile=profile)
     try:
         _verify_foreign_keys_enabled(conn)
         articles = conn.execute(
@@ -902,7 +1014,7 @@ def initialize_estimation_snapshot(affaire_id: int) -> int:
 
 
 def update_affaire(affaire_id: int, data: dict):
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         conn.execute("""
             UPDATE affaires SET
@@ -985,7 +1097,7 @@ def update_affaire_params(affaire_id: int, data: dict):
             values.append(float(v))
     values.append(affaire_id)
 
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         conn.execute(f"UPDATE affaires SET {set_clause} WHERE id = ?", values)
         conn.commit()
@@ -994,7 +1106,7 @@ def update_affaire_params(affaire_id: int, data: dict):
 
 
 def delete_affaire(affaire_id: int):
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         conn.execute("DELETE FROM affaires WHERE id = ?", (affaire_id,))
         conn.commit()
@@ -1006,7 +1118,7 @@ def delete_affaire(affaire_id: int):
 
 def get_affaire_lines(affaire_id: int) -> dict:
     """Retourne dict[dpgf_article_id] = line_data."""
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         rows = conn.execute("""
             SELECT al.*, da.designation, da.unit, da.ratio_type, da.chapter, da.section
@@ -1028,7 +1140,7 @@ def save_affaire_lines(affaire_id: int, lines: list):
 
     Les lignes hors catalogue (``dpgf_article_id`` NULL) ne sont pas effacées.
     """
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         conn.execute(
             "DELETE FROM affaire_lines WHERE affaire_id = ? AND dpgf_article_id IS NOT NULL",
@@ -1139,7 +1251,7 @@ def get_estimation_catalog_rows(affaire_id: int) -> list:
         except Exception:
             ratios_map = {}
 
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         if initialized:
             sql = """
@@ -1244,7 +1356,7 @@ def get_estimation_catalog_rows(affaire_id: int) -> list:
 
 def get_estimation_custom_rows(affaire_id: int) -> list:
     """Lignes hors catalogue (bloc dédié, sans chapitre/section arbre)."""
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         rows = conn.execute(
             """
@@ -1300,7 +1412,7 @@ def get_estimation_chapter_state(affaire_id: int) -> list:
 def get_estimation_section_state(affaire_id: int) -> list:
     """Lignes ``sect:chapitre|section`` depuis ``affaire_chapter_settings`` (sous-chapitres catalogue)."""
     settings = get_chapter_settings(affaire_id)
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         sort_rows = conn.execute(
             """
@@ -1372,7 +1484,7 @@ def batch_sync_estimation_m2_quantities(affaire_id: int, surface_sdo: float) -> 
         return sync_estimation_macro_divisors(affaire_id, surface_sdo, kwc)
 
     qty = _round_money2(float(surface_sdo or 0))
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         cur = conn.execute(
             """
@@ -1401,7 +1513,7 @@ def sync_estimation_macro_divisors(
     """Met à jour ``qty`` des sections macro (sect:…) = SDO ou kWc selon le lot."""
     sdo = _round_money2(float(surface_sdo or 0))
     kwc = _round_money2(float(puissance_pv_kwc or 0))
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         rows = conn.execute(
             """
@@ -1599,9 +1711,10 @@ def _compute_estimation_kpis_conn(conn: sqlite3.Connection, affaire_id: int) -> 
     return _estimation_totals_rounded(totals)
 
 
-def compute_estimation_kpis(affaire_id: int) -> dict:
+def compute_estimation_kpis(affaire_id: int, profile: str | None = None) -> dict:
     """Totaux HT par lot (CFO / CFA / PV) et global — même logique d'affichage que la page."""
-    conn = get_db()
+    prof = normalize_profile(profile) if profile else find_affaire_profile(affaire_id)
+    conn = get_db(prof, prefer_profile=prof)
     try:
         return _compute_estimation_kpis_conn(conn, affaire_id)
     finally:
@@ -1619,7 +1732,7 @@ def save_estimation_changes(affaire_id: int, changes: list) -> dict:
       • Mise à jour custom : ``line_id``, ``dpgf_article_id`` null/absent, mêmes champs.
       • Suppression custom : ``delete_custom``: true, ``line_id``.
     """
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     new_ids = []
     try:
         changes = changes if isinstance(changes, list) else []
@@ -1789,7 +1902,7 @@ def save_estimation_changes(affaire_id: int, changes: list) -> dict:
 # ─── RÉFÉRENTIEL ──────────────────────────────────────────────────────────────
 
 def get_categories() -> list:
-    conn = get_db()
+    conn = get_db(DEFAULT_PROFILE)
     try:
         return [dict(r) for r in conn.execute(
             "SELECT id, name FROM building_categories ORDER BY name"
@@ -1806,7 +1919,7 @@ def delete_project(project_id: int) -> bool:
     puis on supprime explicitement les deux pour rester robuste, peu importe
     l'état de la contrainte.
     """
-    conn = get_db()
+    conn = get_db(project_id=project_id)
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("DELETE FROM devis_lines WHERE project_id = ?", (project_id,))
@@ -1817,31 +1930,44 @@ def delete_project(project_id: int) -> bool:
         conn.close()
 
 
-def get_projects_list() -> list:
-    conn = get_db()
-    try:
-        rows = conn.execute("""
-            SELECT p.*, bc.name as category_name,
-                   (SELECT COUNT(*) FROM devis_lines dl
-                    WHERE dl.project_id=p.id AND dl.row_type='article'
-                      AND dl.mapping_status IN ('auto','manual')) as nb_mapped,
-                   (SELECT COUNT(*) FROM devis_lines dl
-                    WHERE dl.project_id=p.id AND dl.row_type='article'
-                      AND dl.mapping_status='pending') as nb_pending,
-                   (SELECT COUNT(*) FROM devis_lines dl
-                    WHERE dl.project_id=p.id AND dl.row_type='article'
-                      AND dl.mapping_status='unmapped') as nb_unmapped
-            FROM projects p
-            LEFT JOIN building_categories bc ON p.category_id = bc.id
-            ORDER BY p.devis_date DESC
-        """).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
+_PROJECT_LIST_SQL = """
+    SELECT p.*, bc.name as category_name,
+           (SELECT COUNT(*) FROM devis_lines dl
+            WHERE dl.project_id=p.id AND dl.row_type='article'
+              AND dl.mapping_status IN ('auto','manual')) as nb_mapped,
+           (SELECT COUNT(*) FROM devis_lines dl
+            WHERE dl.project_id=p.id AND dl.row_type='article'
+              AND dl.mapping_status='pending') as nb_pending,
+           (SELECT COUNT(*) FROM devis_lines dl
+            WHERE dl.project_id=p.id AND dl.row_type='article'
+              AND dl.mapping_status='unmapped') as nb_unmapped
+    FROM projects p
+    LEFT JOIN building_categories bc ON p.category_id = bc.id
+"""
+
+
+def get_projects_list(profile_filter: str | None = "tous") -> list:
+    filt = normalize_profile_filter(profile_filter)
+    scan = list(PROFILES) if filt == "tous" else [filt]
+    out: list = []
+    for p in scan:
+        conn = get_db(p)
+        try:
+            rows = conn.execute(
+                _PROJECT_LIST_SQL + " ORDER BY p.devis_date DESC"
+            ).fetchall()
+            for r in rows:
+                d = dict(r)
+                d["price_profile"] = p
+                out.append(d)
+        finally:
+            conn.close()
+    out.sort(key=lambda x: (x.get("devis_date") or ""), reverse=True)
+    return out
 
 
 def get_pending_lines(project_id: int) -> list:
-    conn = get_db()
+    conn = get_db(project_id=project_id)
     try:
         rows = conn.execute("""
             SELECT dl.id, dl.original_designation, dl.unit,
@@ -1867,7 +1993,7 @@ def get_all_mappable_lines(project_id: int) -> list:
     bien marquer dans le template qu'il s'agit des données d'origine et non
     de celles de l'article DPGF cible.
     """
-    conn = get_db()
+    conn = get_db(project_id=project_id)
     try:
         rows = conn.execute("""
             SELECT dl.id,
@@ -1892,12 +2018,15 @@ def get_all_mappable_lines(project_id: int) -> list:
         conn.close()
 
 
-def get_bibliotheque_data(affaire_id=None) -> dict:
+def get_bibliotheque_data(affaire_id=None, profile: str | None = None) -> dict:
     """Données pour la page Bibliothèque DPGF.
     Si affaire_id fourni : prix et quantités depuis affaire_lines.
     Sinon : uniquement les articles du référentiel.
     """
-    conn = get_db()
+    if profile is None and affaire_id:
+        profile = find_affaire_profile(affaire_id)
+    profile = normalize_profile(profile) if profile else DEFAULT_PROFILE
+    conn = get_db(profile)
     try:
         affaires = conn.execute(
             "SELECT id, name, surface_sdo, kva_cible, phase_etude, statut FROM affaires ORDER BY name"
@@ -1958,14 +2087,15 @@ def get_bibliotheque_data(affaire_id=None) -> dict:
             'affaires':     [dict(r) for r in affaires],
             'articles':     [dict(r) for r in rows],
             'sec_ratios':   sec_ratios,
+            'price_profile': profile,
         }
     finally:
         conn.close()
 
 
-def hide_article(art_id: int):
+def hide_article(art_id: int, profile: str | None = None):
     """Marque un article PSA comme masqué (is_hidden=1) sans supprimer le référentiel."""
-    conn = get_db()
+    conn = get_db(profile=profile, article_id=art_id)
     try:
         conn.execute("UPDATE dpgf_articles SET is_hidden=1 WHERE id=? AND is_custom=0", (art_id,))
         conn.commit()
@@ -1973,13 +2103,13 @@ def hide_article(art_id: int):
         conn.close()
 
 
-def delete_custom_article(art_id: int):
+def delete_custom_article(art_id: int, profile: str | None = None):
     """Supprime définitivement un article custom (is_custom=1).
 
     Même logique de FK que ``delete_bibliotheque_section`` : imports / mapping
     peuvent référencer ``dpgf_articles`` sans ON DELETE CASCADE.
     """
-    conn = get_db()
+    conn = get_db(profile=profile, article_id=art_id)
     try:
         _verify_foreign_keys_enabled(conn)
         aid = int(art_id)
@@ -2014,7 +2144,7 @@ def delete_custom_article(art_id: int):
         conn.close()
 
 
-def save_bibliotheque_save(changes: list):
+def save_bibliotheque_save(changes: list, profile: str | None = None):
     """Persiste les modifications inline de la bibliothèque (debounce 800 ms côté JS).
 
     Chaque élément de `changes` peut être :
@@ -2027,7 +2157,7 @@ def save_bibliotheque_save(changes: list):
     """
     if not changes:
         return []
-    conn = get_db()
+    conn = get_db(normalize_profile(profile) if profile else DEFAULT_PROFILE)
     new_ids = []
     _FIELDS_NO_ARTICLE_ID = frozenset(
         {"section_ratio", "section_ratio_rename", "section_delete", "section_move"}
@@ -2145,9 +2275,9 @@ def save_bibliotheque_save(changes: list):
     return new_ids
 
 
-def get_dpgf_articles_flat() -> list:
+def get_dpgf_articles_flat(profile: str | None = None) -> list:
     """Retourne tous les articles du référentiel (pour le select de mapping)."""
-    conn = get_db()
+    conn = get_db(normalize_profile(profile) if profile else DEFAULT_PROFILE)
     try:
         rows = conn.execute("""
             SELECT id, code, designation, unit, chapter, section, ratio_type
@@ -2161,7 +2291,7 @@ def get_dpgf_articles_flat() -> list:
 
 def assign_mapping(line_id: int, dpgf_article_id: int):
     """Assigne manuellement une ligne à un article DPGF."""
-    conn = get_db()
+    conn = get_db(line_id=line_id)
     try:
         # Récupère lot et prix pour recalculer prix_normalise
         line = conn.execute(
@@ -2208,7 +2338,7 @@ def assign_mapping(line_id: int, dpgf_article_id: int):
 
 
 def mark_unmapped(line_id: int):
-    conn = get_db()
+    conn = get_db(line_id=line_id)
     try:
         conn.execute(
             "UPDATE devis_lines SET mapping_status='unmapped' WHERE id=?",
@@ -2221,8 +2351,10 @@ def mark_unmapped(line_id: int):
 
 # ─── RATIO OVERRIDES ──────────────────────────────────────────────────────────
 
-def save_ratio_override(dpgf_article_id: int, pu_override: float, raison: str = ''):
-    conn = get_db()
+def save_ratio_override(
+    dpgf_article_id: int, pu_override: float, raison: str = '', profile: str | None = None
+):
+    conn = get_db(profile=profile, article_id=dpgf_article_id)
     try:
         conn.execute("""
             INSERT INTO ratio_overrides (dpgf_article_id, pu_override, raison)
@@ -2237,8 +2369,8 @@ def save_ratio_override(dpgf_article_id: int, pu_override: float, raison: str = 
         conn.close()
 
 
-def get_ratio_overrides() -> dict:
-    conn = get_db()
+def get_ratio_overrides(profile: str | None = None) -> dict:
+    conn = get_db(normalize_profile(profile) if profile else DEFAULT_PROFILE)
     try:
         rows = conn.execute(
             "SELECT dpgf_article_id, pu_override, raison, created_at FROM ratio_overrides"
@@ -2254,7 +2386,7 @@ def get_ratio_overrides() -> dict:
 
 def get_chapter_settings(affaire_id: int) -> dict:
     """Retourne dict[chapter_key] = {is_included, use_macro, qty, ratio_m2_override}."""
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         rows = conn.execute("""
             SELECT chapter_key, is_included, use_macro, qty, ratio_m2_override,
@@ -2277,7 +2409,7 @@ def save_chapter_settings(affaire_id: int, settings: list):
     """
     if not settings:
         return
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         for s in settings:
             conn.execute("""

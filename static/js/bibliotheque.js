@@ -19,7 +19,7 @@ const CHAP_ORDER = ['Courants Forts', 'Courants faibles', 'Photovoltaïque'];
 let sdo           = INIT_SDO;
 let kwc           = INIT_KWC;   // puissance PV cible (kWc) — diviseur ratio sections PV
 let searchQ       = '';
-let expandedChaps = new Set(CHAP_ORDER);
+let expandedChaps = new Set();
 let expandedSecs  = new Set();
 let selectedId    = null;
 
@@ -183,7 +183,10 @@ function flushSave() {
   const changes = Array.from(dirtyMap.values());
   dirtyMap.clear();
 
-  const payload = JSON.stringify({ changes });
+  const payload = JSON.stringify({
+    changes,
+    profil: typeof PRICE_PROFILE !== 'undefined' ? PRICE_PROFILE : null,
+  });
   console.debug('[bibliotheque] flushSave → payload', payload.length, 'octets', JSON.parse(payload));
 
   fetch('/api/bibliotheque/save', {
@@ -544,7 +547,11 @@ function deleteArticle(artId, isCustom) {
     fetch('/api/bibliotheque/article/delete', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ id: artId, is_custom: !!isCustom }),
+      body:    JSON.stringify({
+        id: artId,
+        is_custom: !!isCustom,
+        profil: typeof PRICE_PROFILE !== 'undefined' ? PRICE_PROFILE : null,
+      }),
     })
     .then(async r => {
       const text = await r.text();

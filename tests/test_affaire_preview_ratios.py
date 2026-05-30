@@ -41,7 +41,7 @@ class TestAffairePreviewRatios(unittest.TestCase):
         self.assertEqual(payload["ratio_kwc_pv"], 30)
 
     def test_create_affaire_persists_global_ratios(self):
-        aid = models.create_affaire(
+        aid, _ = models.create_affaire(
             {
                 "name": "Test ratios globaux fiche",
                 "surface_sdo": 1000,
@@ -68,7 +68,7 @@ class TestAffairePreviewRatios(unittest.TestCase):
                 conn.close()
 
     def test_edit_route_persists_global_ratios(self):
-        aid = models.create_affaire(
+        aid, _ = models.create_affaire(
             {
                 "name": "Test edit ratios globaux",
                 "surface_sdo": 1000,

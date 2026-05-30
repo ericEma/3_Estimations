@@ -19,8 +19,14 @@ DB_PATH = os.path.join(PROJECT_DIR, "estimation_elec.db")
 CHAP_ORDER = ["Courants Forts", "Courants faibles", "Photovoltaïque"]
 
 
-def _connect():
-    conn = sqlite3.connect(DB_PATH)
+def _connect(profile: str | None = None):
+    if profile:
+        from db_profiles import get_db_path, normalize_profile
+
+        path = str(get_db_path(normalize_profile(profile)))
+    else:
+        path = DB_PATH
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -54,6 +60,7 @@ def _article_line_total(art: dict, sdo: float, kwc: float) -> float:
 def compute_bibliotheque_lot_totals(
     surface_sdo: float = 1000.0,
     puissance_pv_kwc: float = 100.0,
+    profile: str | None = None,
 ) -> dict:
     """
     Retourne les totaux HT par lot (CFO, CFA, PV) et ratios unitaires de la base de prix.
@@ -64,7 +71,7 @@ def compute_bibliotheque_lot_totals(
     sdo = max(float(surface_sdo or 1000), 1.0)
     kwc = max(float(puissance_pv_kwc or 100), 1.0)
 
-    conn = _connect()
+    conn = _connect(profile)
     try:
         rows = conn.execute(
             """

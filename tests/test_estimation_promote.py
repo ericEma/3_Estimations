@@ -11,7 +11,7 @@ from estimation_promote import handle_promote_action
 class TestEstimationPromote(unittest.TestCase):
     def setUp(self):
         models.ensure_app_tables()
-        self.affaire_id = models.create_affaire(
+        self.affaire_id, _ = models.create_affaire(
             {"name": "Promote test", "surface_sdo": 1000, "puissance_pv_kwc": 100}
         )
 
@@ -283,6 +283,88 @@ class TestEstimationPromote(unittest.TestCase):
                 self.affaire_id = None
             finally:
                 conn.close()
+
+
+class TestEstimationLayoutDelete(unittest.TestCase):
+    def setUp(self):
+        models.ensure_app_tables()
+        self.affaire_id, _ = models.create_affaire(
+            {"name": "Delete layout test", "surface_sdo": 1000, "puissance_pv_kwc": 100}
+        )
+
+    def tearDown(self):
+        if not getattr(self, "affaire_id", None):
+            return
+        conn = models.get_db()
+        aid = self.affaire_id
+        try:
+            conn.execute("DELETE FROM affaire_lines WHERE affaire_id=?", (aid,))
+            conn.execute("DELETE FROM affaire_chapter_settings WHERE affaire_id=?", (aid,))
+            conn.execute(
+                "DELETE FROM affaire_estimation_section_sort WHERE affaire_id=?", (aid,)
+            )
+            conn.execute("DELETE FROM affaires WHERE id=?", (aid,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_delete_tree_article(self):
+        rows = models.get_estimation_catalog_rows(self.affaire_id)
+        self.assertTrue(rows)
+        sample = rows[0]
+        out = handle_layout_action(
+            self.affaire_id,
+            "add_article",
+            {"chapter": sample["chapter"], "section": sample["section"]},
+        )
+        self.assertEqual(out.get("status"), "ok")
+        line_id = out["line_id"]
+        del_out = handle_layout_action(
+            self.affaire_id,
+            "delete_article",
+            {"line_id": line_id},
+        )
+        self.assertEqual(del_out.get("status"), "ok")
+        conn = models.get_db()
+        try:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM affaire_lines WHERE id=?",
+                (line_id,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(n, 0)
+
+    def test_delete_catalog_article_from_affaire(self):
+        rows = models.get_estimation_catalog_rows(self.affaire_id)
+        self.assertTrue(rows)
+        target = rows[0]
+        dpgf_id = target["dpgf_id"]
+        out = handle_layout_action(
+            self.affaire_id,
+            "delete_article",
+            {"dpgf_id": dpgf_id},
+        )
+        self.assertEqual(out.get("status"), "ok")
+        remaining = models.get_estimation_catalog_rows(self.affaire_id)
+        self.assertFalse(any(r.get("dpgf_id") == dpgf_id for r in remaining))
+
+    def test_delete_catalog_section_from_affaire(self):
+        rows = models.get_estimation_catalog_rows(self.affaire_id)
+        self.assertTrue(rows)
+        chap, sec = rows[0]["chapter"], rows[0]["section"]
+        before = [r for r in rows if r["chapter"] == chap and r["section"] == sec]
+        self.assertTrue(before)
+        out = handle_layout_action(
+            self.affaire_id,
+            "delete_section",
+            {"chapter": chap, "section": sec},
+        )
+        self.assertEqual(out.get("status"), "ok")
+        after = models.get_estimation_catalog_rows(self.affaire_id)
+        self.assertFalse(
+            any(r["chapter"] == chap and r["section"] == sec for r in after)
+        )
 
 
 if __name__ == "__main__":

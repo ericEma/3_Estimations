@@ -4,7 +4,7 @@ Sprint 4 : Full Stack Local
 
 Lancement :
     python app.py
-    → http://localhost:5000
+    → http://localhost:8080  (PORT env, défaut 8080)
 """
 
 import os
@@ -50,6 +50,8 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_DIR)
 
 import models
+import db_profiles
+from db_profiles import PROFILE_LABELS, normalize_profile, normalize_profile_filter
 from scripts.engine_ratios import get_dpgf_tree_with_ratios, compute_ratios
 from scripts.engine_bibliotheque_ratios import compute_bibliotheque_lot_totals
 from scripts.export_excel import export_dpgf_excel
@@ -83,12 +85,32 @@ for folder in [app.config['UPLOAD_FOLDER'], app.config['EXPORT_FOLDER']]:
 models.ensure_app_tables()
 
 
+def _profil_qs(affaire=None, profil=None):
+    p = profil or (affaire or {}).get('price_profile')
+    if p:
+        return {'profil': normalize_profile(p)}
+    return {}
+
+
+def _request_profil():
+    return request.args.get('profil') or request.form.get('profil')
+
+
+def _affaire_or_404(affaire_id: int):
+    profil = _request_profil()
+    affaire = models.get_affaire(affaire_id, profile=profil)
+    if not affaire:
+        return None, None
+    return affaire, affaire.get('price_profile') or 'autres'
+
+
 @app.context_processor
 def inject_global_nav():
     """Menu latéral commun + date MAJ base de prix (modification PU)."""
     return {
         'nav_affaires': models.get_affaires(),
         'base_price_last_updated': models.get_base_price_last_updated(),
+        'profile_labels': PROFILE_LABELS,
     }
 
 
@@ -148,16 +170,20 @@ def date_fr_filter(value):
 
 @app.route('/')
 def index():
-    affaires   = models.get_affaires()
+    profile_filter = normalize_profile_filter(request.args.get('profil', 'tous'))
+    affaires   = models.get_affaires(profile_filter)
     categories = models.get_categories()
     return render_template('index.html',
                            affaires=affaires,
-                           categories=categories)
+                           categories=categories,
+                           profile_filter=profile_filter,
+                           profile_labels=PROFILE_LABELS)
 
 
-def _preview_maj_date():
+def _preview_maj_date(profile=None):
     try:
-        return datetime.fromtimestamp(os.path.getmtime(models.DB_PATH)).strftime('%d-%m-%Y')
+        path = db_profiles.get_db_path(normalize_profile(profile) if profile else None)
+        return datetime.fromtimestamp(os.path.getmtime(path)).strftime('%d-%m-%Y')
     except Exception:
         return None
 
@@ -174,13 +200,16 @@ def compute_affaire_preview_estimation(
     ratio_global_cfo_m2=None,
     ratio_global_cfa_m2=None,
     ratio_global_pv_kwc=None,
+    price_profile=None,
 ):
     """Estimation prévisionnelle — ratios fiche ou Bibliothèque DPGF (pu_ht_ref).
 
     Prix CFO/CFA = ratio global × SDO × complexité lot × provisions.
     Prix PV = ratio global × kWc × coef type système × provisions.
     """
-    biblio = compute_bibliotheque_lot_totals(surface_sdo, puissance_pv_kwc)
+    biblio = compute_bibliotheque_lot_totals(
+        surface_sdo, puissance_pv_kwc, profile=price_profile
+    )
     sdo = biblio['surface_sdo']
     kwc = biblio['puissance_pv_kwc']
     ratio_cfo = models.optional_positive_float(ratio_global_cfo_m2) or biblio['ratio_m2_cfo']
@@ -212,20 +241,22 @@ def compute_affaire_preview_estimation(
         'ratio_m2_cfa': round(ratio_cfa, 2),
         'ratio_kwc_pv': round(ratio_pv, 4),
         'coef_pv_system': pv_sys,
-        'maj_date_bdd': _preview_maj_date(),
+        'maj_date_bdd': _preview_maj_date(price_profile),
     }
 
 
-def _compute_preview_context(affaire=None):
+def _compute_preview_context(affaire=None, price_profile=None):
     """Contexte initial page Création / Édition (date MAJ BDD)."""
     surface = 1000
     kwc = 100
+    prof = price_profile
     if affaire:
         surface = affaire.get('surface_sdo') or surface
         kwc = affaire.get('puissance_pv_kwc') or kwc
-    biblio = compute_bibliotheque_lot_totals(surface, kwc)
+        prof = affaire.get('price_profile') or prof
+    biblio = compute_bibliotheque_lot_totals(surface, kwc, profile=prof)
     return {
-        'maj_date_bdd': _preview_maj_date(),
+        'maj_date_bdd': _preview_maj_date(prof),
         'preview_ratio_global_cfo_m2': (
             models.optional_positive_float(affaire.get('ratio_global_cfo_m2')) if affaire else None
         ) or biblio['ratio_m2_cfo'],
@@ -254,6 +285,11 @@ def api_affaire_preview_estimation():
             ratio_global_cfo_m2=request.args.get('ratio_global_cfo_m2'),
             ratio_global_cfa_m2=request.args.get('ratio_global_cfa_m2'),
             ratio_global_pv_kwc=request.args.get('ratio_global_pv_kwc'),
+            price_profile=(
+                models.resolve_profile_from_category_id(request.args.get('category_id'))
+                if request.args.get('category_id')
+                else normalize_profile(request.args.get('profil')) if request.args.get('profil') else None
+            ),
         )
         return jsonify({'ok': True, **payload})
     except Exception as exc:
@@ -287,8 +323,10 @@ def affaire_new():
             'taux_incertitude':    float(request.form.get('taux_incertitude') or 3.0),
             'notes':               request.form.get('notes'),
         }
-        affaire_id = models.create_affaire(data)
-        return redirect(url_for('affaire_estimation', affaire_id=affaire_id))
+        affaire_id, profil = models.create_affaire(data)
+        return redirect(url_for(
+            'affaire_estimation', affaire_id=affaire_id, profil=profil
+        ))
 
     return render_template('affaire_new.html',
                            categories=categories,
@@ -297,7 +335,7 @@ def affaire_new():
 
 @app.route('/affaire/<int:affaire_id>/edit', methods=['GET', 'POST'])
 def affaire_edit(affaire_id):
-    affaire    = models.get_affaire(affaire_id)
+    affaire, profil = _affaire_or_404(affaire_id)
     categories = models.get_categories()
     if not affaire:
         flash('Affaire introuvable', 'error')
@@ -327,19 +365,22 @@ def affaire_edit(affaire_id):
             'statut':              affaire.get('statut', 'brouillon'),
         }
         models.update_affaire(affaire_id, data)
-        return redirect(url_for('affaire_estimation', affaire_id=affaire_id))
+        return redirect(url_for(
+            'affaire_estimation', affaire_id=affaire_id, profil=profil
+        ))
 
     return render_template('affaire_new.html',
                            categories=categories,
                            affaire=affaire,
                            edit_mode=True,
                            current_affaire_id=affaire_id,
-                           **_compute_preview_context(affaire))
+                           price_profile=profil,
+                           **_compute_preview_context(affaire, profil))
 
 
 @app.route('/affaire/<int:affaire_id>')
 def affaire_view(affaire_id):
-    affaire = models.get_affaire(affaire_id)
+    affaire, profil = _affaire_or_404(affaire_id)
     if not affaire:
         flash('Affaire introuvable', 'error')
         return redirect(url_for('index'))
@@ -425,6 +466,7 @@ def affaire_view(affaire_id):
     return render_template('affaire.html',
                            affaire=affaire,
                            current_affaire_id=affaire_id,
+                           price_profile=profil,
                            tree=tree,
                            totals=totals,
                            categories=categories)
@@ -433,10 +475,12 @@ def affaire_view(affaire_id):
 @app.route('/affaire/<int:affaire_id>/estimation')
 def affaire_estimation(affaire_id):
     """Page saisie « double calque » : référentiel (lecture seule) + estimation éditable."""
-    affaire = models.get_affaire(affaire_id)
+    affaire, profil = _affaire_or_404(affaire_id)
     if not affaire:
         flash('Affaire introuvable', 'error')
         return redirect(url_for('index'))
+
+    models.ensure_estimation_snapshot(affaire_id, profil)
 
     catalog = models.get_estimation_catalog_rows(affaire_id)
     customs = models.get_estimation_custom_rows(affaire_id)
@@ -451,6 +495,7 @@ def affaire_estimation(affaire_id):
         affaires=affaires,
         affaire_id=affaire_id,
         current_affaire_id=affaire_id,
+        price_profile=profil,
         catalog_rows=catalog,
         custom_rows=customs,
         totals=totals,
@@ -611,9 +656,21 @@ def affaire_export(affaire_id):
 @app.route('/bibliotheque')
 @app.route('/bibliotheque/<int:affaire_id>')
 def bibliotheque(affaire_id=None):
-    data = models.get_bibliotheque_data(affaire_id)
+    prof_qs = normalize_profile(_request_profil()) if _request_profil() else None
     affaire_courante = None
     if affaire_id:
+        aff_row = models.get_affaire(affaire_id, profile=prof_qs)
+        if aff_row:
+            affaire_courante = aff_row
+            biblio_profile = aff_row.get('price_profile') or db_profiles.DEFAULT_PROFILE
+        else:
+            biblio_profile = prof_qs or db_profiles.DEFAULT_PROFILE
+    else:
+        biblio_profile = prof_qs or db_profiles.DEFAULT_PROFILE
+
+    data = models.get_bibliotheque_data(affaire_id, profile=biblio_profile)
+    biblio_profile = data.get('price_profile') or biblio_profile
+    if affaire_id and not affaire_courante:
         for a in data['affaires']:
             if a['id'] == affaire_id:
                 affaire_courante = a
@@ -623,6 +680,7 @@ def bibliotheque(affaire_id=None):
     # Repli uniquement si pu_ht **référentiel** absent (NULL) — pas si PU=0 (référent valide).
     try:
         ratios_ref = compute_ratios(1000.0, 1.0, 1.0, 1.0)
+        # compute_ratios : legacy DB path si profil non branché dans engine_ratios
         for art in data['articles']:
             if art.get('pu_ht') is None and art['id'] in ratios_ref:
                 art['pu_ht'] = ratios_ref[art['id']].get('avg_pu_actualise') or 0
@@ -642,6 +700,8 @@ def bibliotheque(affaire_id=None):
         affaire_id=affaire_id,
         current_affaire_id=affaire_id,
         affaire_courante=affaire_courante,
+        price_profile=biblio_profile,
+        profile_labels=PROFILE_LABELS,
         nb_articles=nb_articles,
         nb_chapitres=nb_chapitres,
         nb_sections=nb_sections,
@@ -655,7 +715,8 @@ def bibliotheque_save():
     try:
         data    = request.get_json(force=True) or {}
         changes = data.get('changes', [])
-        new_ids = models.save_bibliotheque_save(changes)
+        prof = data.get('profil') or _request_profil()
+        new_ids = models.save_bibliotheque_save(changes, profile=prof)
         return jsonify({'status': 'ok', 'saved': len(changes), 'new_ids': new_ids})
     except Exception as exc:
         # Reconstruit un aperçu du payload depuis le JSON parsé (si disponible)
@@ -678,11 +739,12 @@ def bibliotheque_article_delete():
         is_custom = data.get('is_custom', False)
         if not art_id:
             return jsonify({'status': 'error', 'code': 400, 'message': 'id manquant'}), 400
+        prof = data.get('profil') or _request_profil()
         if is_custom:
-            models.delete_custom_article(int(art_id))
+            models.delete_custom_article(int(art_id), profile=prof)
             return jsonify({'status': 'ok', 'action': 'deleted'})
         else:
-            models.hide_article(int(art_id))
+            models.hide_article(int(art_id), profile=prof)
             return jsonify({'status': 'ok', 'action': 'hidden'})
     except Exception as exc:
         payload_preview = str(data)[:300] if data else '(JSON non parsé)'
@@ -764,6 +826,7 @@ def import_upload():
     # Patch : redirige le fichier vers DEVIS_FILE attendu par import_devis.py
     env = os.environ.copy()
     env['DEVIS_FILE_OVERRIDE'] = filepath
+    env['ESTIMATION_PROFILE'] = models.resolve_profile_from_category_id(category_id)
 
     try:
         result = subprocess.run(
@@ -785,8 +848,9 @@ def import_upload():
 
     # Dernier projet inséré (même fichier SQLite que le subprocess, cwd=PROJECT_DIR)
     project_id_created = None
+    import_profile = env.get('ESTIMATION_PROFILE', db_profiles.DEFAULT_PROFILE)
     if success:
-        conn = models.get_db()
+        conn = models.get_db(import_profile)
         try:
             row = conn.execute(
                 "SELECT id FROM projects ORDER BY id DESC LIMIT 1"
@@ -798,7 +862,11 @@ def import_upload():
 
     # Redirection directe vers le cockpit Matching si import OK
     if success and project_id_created:
-        return redirect(url_for('matching_view', project_id=project_id_created))
+        return redirect(url_for(
+            'matching_view',
+            project_id=project_id_created,
+            profil=import_profile,
+        ))
 
     return render_template('import_result.html',
                            success=success,
@@ -813,7 +881,7 @@ def import_upload():
 @app.route('/mapping/<int:project_id>')
 def mapping_page(project_id):
     from models import get_db
-    conn = get_db()
+    conn = get_db(project_id=project_id)
     project = conn.execute(
         "SELECT * FROM projects WHERE id=?", (project_id,)
     ).fetchone()
@@ -995,8 +1063,10 @@ def matching_view(project_id=None):
     projects   = models.get_projects_list()
     categories = models.get_categories()
     project    = None
+    price_profile = normalize_profile(_request_profil()) if _request_profil() else None
     if project_id:
-        conn = models.get_db()
+        price_profile = price_profile or db_profiles.find_project_profile(project_id)
+        conn = models.get_db(project_id=project_id)
         row = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
         conn.close()
         project = dict(row) if row else None
@@ -1005,12 +1075,13 @@ def matching_view(project_id=None):
                            categories=categories,
                            project=project,
                            project_id=project_id,
+                           price_profile=price_profile or db_profiles.DEFAULT_PROFILE,
                            today=date.today().isoformat())
 
 
 @app.route('/api/matching/<int:project_id>/data')
 def matching_data(project_id):
-    conn = models.get_db()
+    conn = models.get_db(project_id=project_id)
     try:
         project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
         if not project:
@@ -1119,7 +1190,7 @@ def matching_line_candidates(line_id):
 
     from engine_matching import clean_designation_radical, find_best_match, resolve_dpgf_section
 
-    conn = models.get_db()
+    conn = models.get_db(line_id=line_id)
     try:
         line = conn.execute(
             """
@@ -1220,7 +1291,7 @@ def matching_line_candidates(line_id):
 @app.route('/api/matching/line/<int:line_id>/section_articles')
 def matching_line_section_articles(line_id):
     """Retourne tous les articles base d'un chapitre/section (détectés ou choisis) pour la ligne devis."""
-    conn = models.get_db()
+    conn = models.get_db(line_id=line_id)
     try:
         line = conn.execute(
             "SELECT lot, context_path FROM devis_lines WHERE id=?",
@@ -1298,7 +1369,7 @@ def matching_line_section_articles(line_id):
 @app.route('/api/matching/line/<int:line_id>/browse_options')
 def matching_line_browse_options(line_id):
     """Retourne les options de sous-chapitres (avec chapitre) pour le parcours manuel."""
-    conn = models.get_db()
+    conn = models.get_db(line_id=line_id)
     try:
         line = conn.execute(
             "SELECT lot, context_path FROM devis_lines WHERE id=?",
@@ -1379,7 +1450,7 @@ def matching_line_create_article(line_id):
     if pu_val < 0:
         return jsonify({'error': 'Le PU doit être un nombre positif.'}), 400
 
-    conn = models.get_db()
+    conn = models.get_db(line_id=line_id)
     try:
         line = conn.execute(
             "SELECT project_id, original_designation, unit, unit_price_ht, lot, context_path FROM devis_lines WHERE id=?",
@@ -1489,7 +1560,7 @@ def matching_line_select(line_id):
     if not dpgf_article_id:
         return jsonify({'error': 'dpgf_article_id requis'}), 400
 
-    conn = models.get_db()
+    conn = models.get_db(line_id=line_id)
     try:
         conn.execute("""
             UPDATE devis_lines
@@ -1553,7 +1624,7 @@ def matching_line_weighted_price(line_id):
     data = request.get_json(force=True) or {}
     raw_val = data.get('weighted_price')
 
-    conn = models.get_db()
+    conn = models.get_db(line_id=line_id)
     try:
         chk = conn.execute(
             "SELECT id, mapping_status, project_id FROM devis_lines WHERE id=?",
@@ -1626,7 +1697,7 @@ def matching_line_weighted_price(line_id):
 
 @app.route('/api/matching/line/<int:line_id>/exclude', methods=['POST'])
 def matching_line_exclude(line_id):
-    conn = models.get_db()
+    conn = models.get_db(line_id=line_id)
     try:
         line = conn.execute(
             "SELECT mapping_status FROM devis_lines WHERE id=?", (line_id,)
@@ -1649,7 +1720,8 @@ def matching_add_synonym():
     mapped   = (data.get('mapped_term')   or '').strip()
     if not original or not mapped:
         return jsonify({'error': 'original_term et mapped_term requis'}), 400
-    conn = models.get_db()
+    prof = data.get('profil') or _request_profil()
+    conn = models.get_db(normalize_profile(prof) if prof else db_profiles.DEFAULT_PROFILE)
     try:
         conn.execute(
             "INSERT OR REPLACE INTO synonyms (original_term, mapped_term) VALUES (?,?)",
@@ -1663,7 +1735,7 @@ def matching_add_synonym():
 
 @app.route('/api/matching/<int:project_id>/validate', methods=['POST'])
 def matching_validate(project_id):
-    conn = models.get_db()
+    conn = models.get_db(project_id=project_id)
     try:
         conn.execute("UPDATE projects SET import_ok=1 WHERE id=?", (project_id,))
         conn.commit()
@@ -1774,12 +1846,13 @@ def _initialize_affaire_lines(affaire_id: int, affaire: dict):
 
 
 if __name__ == '__main__':
+    port = int(os.environ.get('PORT', '8080'))
     print("=" * 60)
     print(" Estimation Élec — Application Web Locale")
-    print(" http://localhost:5000")
+    print(f" http://localhost:{port}")
     print("=" * 60, flush=True)
 
     # Démarre le watchdog de fermeture auto (heartbeat navigateur)
     threading.Thread(target=_watchdog_loop, daemon=True).start()
 
-    app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)
+    app.run(debug=True, host='0.0.0.0', port=port, use_reloader=False)

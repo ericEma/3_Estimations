@@ -7,3 +7,7 @@ debug-*.log
 *_tmp_probe_*.py
 _tmp_probe_*.py
 _tmp_probe_*.txt
+
+# Sauvegardes cloud (sync Google Drive / OneDrive — hors Git)
+backups/cloud/**/*.db
+backups/cloud/**/.last_*

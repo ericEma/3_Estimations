@@ -24,9 +24,9 @@ let tauxPhase = typeof INIT_TAUX_PHASE === 'number' ? INIT_TAUX_PHASE : 3;
 const PHASE_PRESETS = { DIAG: 6, APS: 4, APD: 3, PRO: 1 };
 
 let searchQ = '';
-let expandedChaps = new Set(CHAP_ORDER);
+let expandedChaps = new Set();
 let expandedSecs  = new Set();
-let expandedCustom = true;
+let expandedCustom = false;
 
 let localCatalog = (CATALOG_ROWS || []).map(r => Object.assign({}, r));
 localCatalog.forEach(r => {
@@ -47,6 +47,37 @@ let secSaveTimer = null;
 
 function secUiKey(chap, sec) {
   return `${chap}|||${sec}`;
+}
+
+function expandStorageKey() {
+  return `estim_expand_${AFFAIRE_ID}`;
+}
+
+function saveExpandStateBeforeReload() {
+  try {
+    sessionStorage.setItem(expandStorageKey(), JSON.stringify({
+      chaps: [...expandedChaps],
+      secs: [...expandedSecs],
+      custom: expandedCustom,
+    }));
+  } catch (e) { /* quota / navigation privée */ }
+}
+
+function restoreExpandStateAfterReload() {
+  try {
+    const raw = sessionStorage.getItem(expandStorageKey());
+    if (!raw) return;
+    sessionStorage.removeItem(expandStorageKey());
+    const st = JSON.parse(raw);
+    if (Array.isArray(st.chaps)) st.chaps.forEach(c => expandedChaps.add(c));
+    if (Array.isArray(st.secs)) st.secs.forEach(s => expandedSecs.add(s));
+    if (st.custom) expandedCustom = true;
+  } catch (e) { /* ignore */ }
+}
+
+function reloadEstimationPage() {
+  saveExpandStateBeforeReload();
+  window.location.reload();
 }
 
 function sortOrderValue(value, fallback = 999999) {
@@ -177,7 +208,7 @@ function promoteEstimationSection(chap, sec) {
   callEstimationPromote('promote_section', { chapter: chap, section: sec }).then(data => {
     if (data) {
       showFlash(`Section ajoutée à la base de prix (${data.articles_promoted || 0} article(s))`);
-      window.location.reload();
+      reloadEstimationPage();
     }
   });
 }
@@ -188,7 +219,7 @@ function promoteEstimationArticle(lineId, label) {
   callEstimationPromote('promote_article', { line_id: lineId }).then(data => {
     if (data) {
       showFlash('Article ajouté à la base de prix');
-      window.location.reload();
+      reloadEstimationPage();
     }
   });
 }
@@ -232,7 +263,7 @@ function addEstimationSection(chap, afterSec) {
         expandedChaps.add(chap);
       }
       showFlash('Sous-chapitre ajouté');
-      window.location.reload();
+      reloadEstimationPage();
     }
   });
 }
@@ -244,24 +275,46 @@ function addEstimationArticle(chap, sec, afterDpgf, afterLine) {
   callEstimationLayout('add_article', body).then(data => {
     if (data) {
       showFlash('Article ajouté');
-      window.location.reload();
+      reloadEstimationPage();
     }
   });
 }
 
 function deleteEstimationSection(chap, sec) {
-  if (!confirm(`Supprimer la section « ${sec} » et ses lignes affaire ?`)) return;
+  const secArts = localCatalog.filter(r => r.chapter === chap && r.section === sec);
+  const count = secArts.length;
+  const st = ensureSectionState(chap, sec);
+  const msg = st.is_local
+    ? `Supprimer la section « ${sec} » et ses ${count} ligne(s) ?`
+    : `Retirer la section « ${sec} » de cette estimation (${count} ligne(s)) ?`;
+  if (!confirm(msg)) return;
   callEstimationLayout('delete_section', { chapter: chap, section: sec }).then(data => {
     if (data) {
-      showFlash('Section supprimée');
-      window.location.reload();
+      showFlash(st.is_local ? 'Section supprimée' : 'Section retirée');
+      reloadEstimationPage();
+    }
+  });
+}
+
+function deleteEstimationArticle(chap, sec, dpgfId, lineId, isTree) {
+  const msg = isTree
+    ? 'Supprimer cet article de l\'estimation ?'
+    : 'Retirer cet article de cette estimation ?';
+  if (!confirm(msg)) return;
+  const body = { chapter: chap, section: sec };
+  if (dpgfId) body.dpgf_id = dpgfId;
+  if (lineId) body.line_id = lineId;
+  callEstimationLayout('delete_article', body).then(data => {
+    if (data) {
+      showFlash(isTree ? 'Article supprimé' : 'Article retiré');
+      reloadEstimationPage();
     }
   });
 }
 
 function moveEstimationSection(chap, sec, direction) {
   callEstimationLayout('move_section', { chapter: chap, section: sec, direction }).then(data => {
-    if (data) window.location.reload();
+    if (data) reloadEstimationPage();
   });
 }
 
@@ -270,21 +323,19 @@ function moveEstimationArticle(chap, sec, direction, dpgfId, lineId) {
   if (dpgfId) body.dpgf_id = dpgfId;
   if (lineId) body.line_id = lineId;
   callEstimationLayout('move_article', body).then(data => {
-    if (data) window.location.reload();
+    if (data) reloadEstimationPage();
   });
 }
 
 function sectionActionButtons(chap, sec, secArts) {
-  const st = ensureSectionState(chap, sec);
   const lastArt = secArts[secArts.length - 1];
   const afterDpgf = lastArt && lastArt.dpgf_id ? lastArt.dpgf_id : null;
   const afterLine = lastArt && lastArt.is_tree_custom ? lastArt.line_id : null;
-  const delBtn = st.is_local
-    ? `<button type="button" class="sec-del-btn" title="Supprimer ce sous-chapitre de l'affaire"
+  const st = ensureSectionState(chap, sec);
+  const delBtn = `<button type="button" class="sec-del-btn" title="Supprimer ce sous-chapitre de l'estimation"
          onclick="event.stopPropagation();window.__est.deleteSection('${escJ(chap)}','${escJ(sec)}')">
          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 4h10M6 4V3h4v1M5 4v8a1 1 0 001 1h4a1 1 0 001-1V4"/><path d="M7 7v4M9 7v4"/></svg>
-       </button>`
-    : '';
+       </button>`;
   const promoteSecBtn = st.is_local
     ? `<button type="button" class="estim-promote-btn" title="Ajouter cette section à la base de prix"
          onclick="event.stopPropagation();window.__est.promoteSection('${escJ(chap)}','${escJ(sec)}')">📖</button>`
@@ -329,6 +380,21 @@ function estimDesigInput(value, extraAttrs, extraClass) {
   return `<input type="text" class="${cls}" ${extraAttrs || ''}
     value="${esc(value || '')}" placeholder="Désignation"
     title="Désignation" onclick="event.stopPropagation()">`;
+}
+
+const ESTIM_UNIT_OPTIONS = ['u', 'ens', 'ml', 'm²'];
+
+function normalizeEstimUnit(u) {
+  return String(u || 'u').toLowerCase().replace(/\u00b2/g, '2').replace(/\s/g, '');
+}
+
+function estimUnitSelect(value, dataAttrs) {
+  const cur = normalizeEstimUnit(value);
+  const opts = ESTIM_UNIT_OPTIONS.map(u => {
+    const sel = normalizeEstimUnit(u) === cur ? ' selected' : '';
+    return `<option value="${u}"${sel}>${u}</option>`;
+  }).join('');
+  return `<select class="estim-inp estim-unit-sel" ${dataAttrs} onclick="event.stopPropagation()">${opts}</select>`;
 }
 
 function money(n) {
@@ -989,6 +1055,7 @@ function onCatalogInput(dpgfId, field, raw, elTotal, lineId) {
       row.unit_price_ht = Number.isNaN(v) ? null : v;
     }
   }
+  if (field === 'unit') row.unit = (raw || 'u').trim();
   elTotal.textContent = moneyTot(lineTotalCatalog(row));
   updateKpiStrip(recomputeTotals());
   markDirtyCatalog(row);
@@ -1195,6 +1262,10 @@ function render() {
         const dataIdAttr = isTree
           ? `data-line-id="${a.line_id}" data-tree-custom="1"`
           : `data-dpgf-id="${a.dpgf_id}"`;
+        const unitCell = isTree
+          ? estimUnitSelect(a.unit || 'u', `data-field="unit" data-tree-custom="1" data-line-id="${a.line_id}"`)
+          : `<span class="estim-readonly">${esc(a.unit || '—')}</span>`;
+        const delTitle = isTree ? 'Supprimer cet article' : 'Retirer cet article de l\'estimation';
         rows.push(`
           <tr class="row-art ${lineInc ? '' : 'row-art-muted'}" ${dataIdAttr}>
             <td class="td-stripe ${cm.cls}"></td>
@@ -1205,7 +1276,7 @@ function render() {
                 'art-desig-edit',
               )
             }${lineM2Ratio} ${ratioTag}${isTree ? ' <span class="ratio-tag ratio-unit">A</span>' : ''}</td>
-            <td class="cell-ref r"><span class="estim-readonly">${esc(a.unit || '—')}</span></td>
+            <td class="cell-ref r">${unitCell}</td>
             <td class="cell-ref r"><span class="estim-readonly">${refPu ? money(refPu) : '—'}</span></td>
             <td class="cell-est r">
               <input type="number" class="estim-inp" min="0" step="0.01" data-field="qty" ${dataIdAttr}
@@ -1223,6 +1294,10 @@ function render() {
                 onclick="event.stopPropagation();window.__est.moveArticle('${escJ(chap)}','${escJ(sec)}','up',${a.dpgf_id || 'null'},${a.line_id || 'null'})">▲</button>
               <button type="button" class="estim-move-btn" title="Descendre"
                 onclick="event.stopPropagation();window.__est.moveArticle('${escJ(chap)}','${escJ(sec)}','down',${a.dpgf_id || 'null'},${a.line_id || 'null'})">▼</button>
+              <button type="button" class="trash-btn" title="${delTitle}"
+                onclick="event.stopPropagation();window.__est.deleteArticle('${escJ(chap)}','${escJ(sec)}',${a.dpgf_id || 'null'},${a.line_id || 'null'},${isTree ? 1 : 0})">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 4h10M6 4V3h4v1M5 4v8a1 1 0 001 1h4a1 1 0 001-1V4"/><path d="M7 7v4M9 7v4"/></svg>
+              </button>
             </td>
           </tr>`);
       }
@@ -1361,15 +1436,17 @@ function render() {
     });
   });
 
-  tbody.querySelectorAll('input[data-dpgf-id]:not([data-field="desig"]), input[data-tree-custom]:not([data-field="desig"])').forEach(inp => {
-    inp.addEventListener('input', () => {
+  tbody.querySelectorAll('input[data-dpgf-id]:not([data-field="desig"]), input[data-tree-custom]:not([data-field="desig"]), select[data-tree-custom]').forEach(inp => {
+    const handler = () => {
       const dpgfId = inp.dataset.dpgfId ? parseInt(inp.dataset.dpgfId, 10) : null;
       const lineId = inp.dataset.lineId ? parseInt(inp.dataset.lineId, 10) : null;
       const totEl = dpgfId
         ? document.getElementById(`tot-${dpgfId}`)
         : document.getElementById(`tot-ln-${lineId}`);
       onCatalogInput(dpgfId, inp.dataset.field, inp.value, totEl, lineId);
-    });
+    };
+    inp.addEventListener('input', handler);
+    inp.addEventListener('change', handler);
   });
 
   tbody.querySelectorAll('input[data-sec-name]').forEach(inp => {
@@ -1410,6 +1487,7 @@ window.__est = {
   addSection: addEstimationSection,
   addArticle: addEstimationArticle,
   deleteSection: deleteEstimationSection,
+  deleteArticle: deleteEstimationArticle,
   moveSection: moveEstimationSection,
   moveArticle: moveEstimationArticle,
   promoteSection: promoteEstimationSection,
@@ -1417,7 +1495,7 @@ window.__est = {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
-  expandedChaps.add(CUSTOM_CHAP);
+  restoreExpandStateAfterReload();
   const elTpInit = document.getElementById('hdr-taux-phase');
   if (elTpInit && typeof INIT_TAUX_PHASE === 'number') {
     elTpInit.value = String(INIT_TAUX_PHASE);

@@ -2,11 +2,14 @@
 REM ============================================================
 REM  Lancer_Estimateur.bat  —  Estimation Elec
 REM  Lance Flask + ouvre le navigateur automatiquement.
+REM  Port : variable PORT (defaut 8080)
 REM ============================================================
 setlocal
 title Estimation Elec — Lancement
 
 cd /d "%~dp0"
+
+if not defined PORT set "PORT=8080"
 
 echo.
 echo  ============================================
@@ -18,6 +21,9 @@ REM --- Dossiers requis -------------------------------------------
 if not exist "logs"    mkdir logs
 if not exist "exports" mkdir exports
 if not exist "uploads" mkdir uploads
+if not exist "backups\cloud\Hopitaux" mkdir "backups\cloud\Hopitaux"
+if not exist "backups\cloud\Industriel" mkdir "backups\cloud\Industriel"
+if not exist "backups\cloud\Autres" mkdir "backups\cloud\Autres"
 
 REM --- Selection Python ------------------------------------------
 set "PYTHON_EXE="
@@ -35,17 +41,23 @@ if exist ".\python\python.exe" (
     )
 )
 
-REM --- Port 5000 deja actif ? ------------------------------------
-netstat -ano 2>nul | findstr /C:":5000 " | findstr /C:"LISTENING" >nul 2>&1
+REM --- Sauvegarde BDD (quotidienne, max 1x/jour par profil) --------
+if exist "scripts\backup_db.py" (
+    echo [..] Sauvegarde BDD...
+    "%PYTHON_EXE%" scripts\backup_db.py --launch >nul 2>&1
+)
+
+REM --- Port deja actif ? -----------------------------------------
+netstat -ano 2>nul | findstr /C:":%PORT% " | findstr /C:"LISTENING" >nul 2>&1
 if not errorlevel 1 (
     echo [INFO] Serveur deja actif — ouverture du navigateur.
-    start "" http://localhost:5000
+    start "" http://localhost:%PORT%
     exit /b 0
 )
 
 REM --- Lancement du serveur Flask --------------------------------
-echo [OK] Demarrage du serveur Flask...
-start "Estimation Elec — Serveur" /D "%~dp0" cmd /k "%PYTHON_EXE% app.py 2>&1"
+echo [OK] Demarrage du serveur Flask (port %PORT%)...
+start "Estimation Elec — Serveur" /D "%~dp0" cmd /k "set PORT=%PORT%&& %PYTHON_EXE% app.py 2>&1"
 
 REM --- Attente : on interroge le port jusqu'a 20 secondes --------
 echo [..] En attente du serveur (max 20 s)...
@@ -54,7 +66,7 @@ set TRIES=0
 :WAIT
 timeout /t 1 /nobreak >nul
 set /a TRIES+=1
-netstat -ano 2>nul | findstr /C:":5000 " | findstr /C:"LISTENING" >nul 2>&1
+netstat -ano 2>nul | findstr /C:":%PORT% " | findstr /C:"LISTENING" >nul 2>&1
 if not errorlevel 1 goto READY
 if %TRIES% geq 20 goto TIMEOUT
 goto WAIT
@@ -62,9 +74,9 @@ goto WAIT
 :READY
 echo [OK] Serveur pret en %TRIES% s — ouverture du navigateur...
 echo.
-start "" http://localhost:5000
+start "" http://localhost:%PORT%
 echo  ============================================
-echo   http://localhost:5000
+echo   http://localhost:%PORT%
 echo   (Fermez la fenetre Serveur pour arreter)
 echo  ============================================
 echo.

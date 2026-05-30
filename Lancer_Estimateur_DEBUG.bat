@@ -3,6 +3,7 @@ REM ============================================================
 REM  Lancer_Estimateur_DEBUG.bat
 REM  Flask dans CETTE fenetre (toutes les traces / stack traces).
 REM  Meme detection Python que Lancer_Estimateur.bat.
+REM  Port : variable PORT (defaut 8080)
 REM
 REM  ESTIMATION_DEBUG_LOG : chemin NDJSON pour sessions debug Cursor
 REM ============================================================
@@ -11,12 +12,15 @@ title Estimation Elec — DEBUG
 
 cd /d "%~dp0"
 
+if not defined PORT set "PORT=8080"
+
 set "ESTIMATION_DEBUG_LOG=%~dp0debug-b2b456.log"
 
 echo.
 echo  ============================================
 echo   Estimation Elec  ^|  MODE DEBUG
 echo   Flask dans cette fenetre ^(app.py debug=True^)
+echo   Port : %PORT%
 echo   ESTIMATION_DEBUG_LOG=%ESTIMATION_DEBUG_LOG%
 echo  ============================================
 echo.
@@ -40,16 +44,16 @@ if exist ".\python\python.exe" (
     )
 )
 
-netstat -ano 2>nul | findstr /C:":5000 " | findstr /C:"LISTENING" >nul 2>&1
+netstat -ano 2>nul | findstr /C:":%PORT% " | findstr /C:"LISTENING" >nul 2>&1
 if not errorlevel 1 (
-    echo [INFO] Port 5000 deja en ecoute.
-    start "" http://localhost:5000/matching
+    echo [INFO] Port %PORT% deja en ecoute.
+    start "" http://localhost:%PORT%/matching
     pause
     exit /b 0
 )
 
 REM Navigateur ~6 s apres le lancement (laisse Flask demarrer)
-start "" cmd /c "timeout /t 6 /nobreak >nul & start http://localhost:5000/matching"
+start "" cmd /c "timeout /t 6 /nobreak >nul & start http://localhost:%PORT%/matching"
 
 echo [OK] Demarrage Flask ici — Ctrl+C pour arreter.
 echo     Navigateur /matching vers 6 s si le serveur est pret.

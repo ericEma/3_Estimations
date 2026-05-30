@@ -58,15 +58,23 @@ def register_python_pow(conn: sqlite3.Connection):
 def init_database(reset: bool = False) -> sqlite3.Connection:
     """Crée (ou recrée) la base de données à partir de schema.sql."""
 
-    # ── Reset ──────────────────────────────────────────────────
-    if reset and DB_PATH.exists():
-        logger.warning(f"MODE RESET : suppression de {DB_PATH.name}")
-        DB_PATH.unlink()
+    profile = os.environ.get("ESTIMATION_PROFILE")
+    if profile:
+        from db_profiles import get_db_path, normalize_profile
 
-    db_exists = DB_PATH.exists()
+        db_file = get_db_path(normalize_profile(profile))
+    else:
+        db_file = DB_PATH
+
+    # ── Reset ──────────────────────────────────────────────────
+    if reset and db_file.exists():
+        logger.warning(f"MODE RESET : suppression de {db_file.name}")
+        db_file.unlink()
+
+    db_exists = db_file.exists()
 
     # ── Connexion ──────────────────────────────────────────────
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_file))
     conn.row_factory = sqlite3.Row
     # Foreign keys doivent être activées à CHAQUE connexion (non persistées)
     conn.execute("PRAGMA foreign_keys = ON")
@@ -77,7 +85,7 @@ def init_database(reset: bool = False) -> sqlite3.Connection:
         register_python_pow(conn)
 
     if db_exists and not reset:
-        logger.info(f"Base existante chargée : {DB_PATH.name}")
+        logger.info(f"Base existante chargée : {db_file.name}")
         _ensure_knowledge_table(conn)
         _verify_schema(conn)
         return conn

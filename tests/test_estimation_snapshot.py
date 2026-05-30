@@ -16,7 +16,7 @@ class TestEstimationSnapshot(unittest.TestCase):
         models.ensure_app_tables()
 
     def test_create_affaire_initializes_snapshot(self):
-        aid = models.create_affaire({
+        aid, _ = models.create_affaire({
             "name": "Test snapshot unitaire",
             "surface_sdo": 1000,
             "puissance_pv_kwc": 100,
@@ -59,7 +59,7 @@ class TestEstimationSnapshot(unittest.TestCase):
 
     def test_snapshot_pu_immune_to_biblio_change(self):
         """PU figé dans ratio_ref : modification pu_ht_ref catalogue sans impact."""
-        aid = models.create_affaire({
+        aid, _ = models.create_affaire({
             "name": "Test gel PU",
             "surface_sdo": 500,
             "puissance_pv_kwc": 50,
@@ -133,7 +133,7 @@ class TestEstimationSnapshot(unittest.TestCase):
             self.skipTest("Section Installation de chantier absente")
 
         dpgf_id = int(row["id"])
-        aid = models.create_affaire({
+        aid, _ = models.create_affaire({
             "name": "Test PU devis snapshot",
             "surface_sdo": 1000,
             "puissance_pv_kwc": 100,
@@ -155,7 +155,7 @@ class TestEstimationSnapshot(unittest.TestCase):
 
     def test_macro_section_total_switches_to_article_detail_total(self):
         """Section macro : un article chiffré remplace le total ratio de sous-chapitre."""
-        aid = models.create_affaire({
+        aid, _ = models.create_affaire({
             "name": "Test total section detail",
             "surface_sdo": 1000,
             "puissance_pv_kwc": 100,

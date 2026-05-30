@@ -10,21 +10,31 @@
       <h1 class="page-panel-title">Mes affaires</h1>
       <p class="page-panel-desc">{{ affaires|length }} affaire{% if affaires|length != 1 %}s{% endif %}</p>
     </div>
+    <div class="dash-profile-filter" role="tablist" aria-label="Filtrer par profil">
+      <a href="{{ url_for('index', profil='tous') }}"
+         class="btn btn-sm {% if profile_filter == 'tous' %}btn-accent{% else %}btn-outlined{% endif %}">Tous</a>
+      {% for key, label in profile_labels.items() %}
+      <a href="{{ url_for('index', profil=key) }}"
+         class="btn btn-sm {% if profile_filter == key %}btn-accent{% else %}btn-outlined{% endif %}">{{ label }}</a>
+      {% endfor %}
+    </div>
   </div>
 
   {% if affaires %}
   <div class="affaires-grid affaires-grid-explorer">
     {% for a in affaires %}
-    <div class="affaire-card affaire-card-explorer" onclick="location.href='{{ url_for('affaire_estimation', affaire_id=a.id) }}'">
+    <div class="affaire-card affaire-card-explorer" onclick="location.href='{{ url_for('affaire_estimation', affaire_id=a.id, profil=a.price_profile) }}'">
       <div class="affaire-card-top">
         <span class="status-badge status-{{ a.statut }}">{{ a.statut|title }}</span>
+        <span class="lot-tag" style="opacity:.85;font-size:11px">{{ profile_labels.get(a.price_profile, a.price_profile) }}</span>
         <div class="affaire-card-actions" onclick="event.stopPropagation()">
-          <a href="{{ url_for('affaire_edit', affaire_id=a.id) }}"
+          <a href="{{ url_for('affaire_edit', affaire_id=a.id, profil=a.price_profile) }}"
              class="btn btn-sm btn-outlined" title="Ouvrir la fiche affaire">Fiche</a>
-          <a href="{{ url_for('affaire_estimation', affaire_id=a.id) }}"
+          <a href="{{ url_for('affaire_estimation', affaire_id=a.id, profil=a.price_profile) }}"
              class="btn btn-sm btn-outlined" title="Ouvrir l'estimation">Estimer</a>
           <button type="button" class="btn btn-sm btn-danger"
                   data-affaire-id="{{ a.id }}"
+                  data-affaire-profil="{{ a.price_profile }}"
                   data-affaire-name="{{ a.name | e }}"
                   onclick="event.stopPropagation(); deleteAffaireFromBtn(this)"
                   title="Supprimer">✕</button>
@@ -87,9 +97,12 @@
 <script>
 function deleteAffaireFromBtn(btn) {
     var id = parseInt(btn.getAttribute('data-affaire-id'), 10);
+    var profil = btn.getAttribute('data-affaire-profil') || '';
     var name = btn.getAttribute('data-affaire-name') || '';
     if (!id || !confirm('Supprimer l\'affaire "' + name + '" ?')) return;
-    fetch('/api/affaire/' + id + '/delete', { method: 'POST' })
+    var url = '/api/affaire/' + id + '/delete';
+    if (profil) url += '?profil=' + encodeURIComponent(profil);
+    fetch(url, { method: 'POST' })
         .then(function (r) {
             if (!r.ok) return Promise.reject(new Error('HTTP ' + r.status));
             return r.json();

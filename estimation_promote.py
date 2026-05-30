@@ -329,7 +329,7 @@ def _insert_bibliotheque_article(
 
 
 def handle_promote_action(affaire_id: int, action: str, data: dict) -> dict:
-    conn = get_db()
+    conn = get_db(affaire_id=affaire_id)
     try:
         _verify_foreign_keys_enabled(conn)
         aff = conn.execute("SELECT id FROM affaires WHERE id = ?", (affaire_id,)).fetchone()
