@@ -657,8 +657,16 @@ def _ensure_app_tables_on_conn(conn: sqlite3.Connection) -> None:
         conn.commit()
 
         _migrate_devis_lines_excluded_status(conn)
+        _migrate_affaire_client_baselines(conn)
     finally:
         pass
+
+
+def _migrate_affaire_client_baselines(conn: sqlite3.Connection) -> None:
+    import affaire_baselines
+
+    affaire_baselines.ensure_baseline_tables(conn)
+    conn.commit()
 
 
 # ─── AFFAIRES ─────────────────────────────────────────────────────────────────
@@ -1013,7 +1021,12 @@ def initialize_estimation_snapshot(affaire_id: int, profile: str | None = None) 
         conn.close()
 
 
-def update_affaire(affaire_id: int, data: dict):
+def update_affaire(affaire_id: int, data: dict) -> dict:
+    """Met à jour l'affaire. Retourne métadonnées (phase / typologie)."""
+    import affaire_baselines
+
+    old = get_affaire(affaire_id)
+    profile = old.get("price_profile") if old else find_affaire_profile(affaire_id)
     conn = get_db(affaire_id=affaire_id)
     try:
         conn.execute("""
@@ -1066,14 +1079,24 @@ def update_affaire(affaire_id: int, data: dict):
         conn.commit()
     finally:
         conn.close()
+    meta = {}
+    if old:
+        meta = affaire_baselines.handle_affaire_update_meta(
+            affaire_id, old, data, profile
+        )
+    return meta
 
 
-def update_affaire_params(affaire_id: int, data: dict):
+def update_affaire_params(affaire_id: int, data: dict) -> dict:
     """Auto-save temps réel des paramètres de cadrage.
 
     Met à jour uniquement les colonnes présentes dans `data` : SDO, kVA, phase,
     taux_phase, taux_incertitude, coef_risque, coef_complexity_{cfo,cfa,pv}.
     """
+    import affaire_baselines
+
+    old = get_affaire(affaire_id)
+    profile = old.get("price_profile") if old else find_affaire_profile(affaire_id)
     ALLOWED_FLOAT = {
         'surface_sdo', 'kva_cible', 'puissance_pv_kwc',
         'taux_phase', 'taux_incertitude', 'coef_risque',
@@ -1083,7 +1106,7 @@ def update_affaire_params(affaire_id: int, data: dict):
     ALLOWED       = ALLOWED_FLOAT | ALLOWED_STR
     fields = [k for k in data.keys() if k in ALLOWED]
     if not fields:
-        return
+        return {}
 
     set_clause = ', '.join(f"{f} = ?" for f in fields) + ", updated_at = CURRENT_TIMESTAMP"
     values = []
@@ -1103,12 +1126,63 @@ def update_affaire_params(affaire_id: int, data: dict):
         conn.commit()
     finally:
         conn.close()
+    meta = {}
+    if old and "phase_etude" in data:
+        merged = dict(old)
+        merged.update(data)
+        meta = affaire_baselines.handle_affaire_update_meta(
+            affaire_id, old, merged, profile
+        )
+    return meta
 
 
-def delete_affaire(affaire_id: int):
-    conn = get_db(affaire_id=affaire_id)
+def delete_affaire(affaire_id: int, profile: str | None = None) -> None:
+    """Supprime une affaire et ses dépendances (y compris événements dérive ±3 %)."""
+    prefer = normalize_profile(profile) if profile else None
+    if prefer:
+        resolved = find_affaire_profile(affaire_id, prefer=prefer)
+        if not resolved:
+            raise LookupError(f"Affaire {affaire_id} introuvable (profil {prefer})")
+    else:
+        resolved = find_affaire_profile(affaire_id)
+        if not resolved:
+            raise LookupError(f"Affaire {affaire_id} introuvable")
+
+    conn = get_db(resolved, prefer_profile=resolved)
     try:
-        conn.execute("DELETE FROM affaires WHERE id = ?", (affaire_id,))
+        _verify_foreign_keys_enabled(conn)
+        if not conn.execute(
+            "SELECT 1 FROM affaires WHERE id = ?", (affaire_id,)
+        ).fetchone():
+            raise LookupError(f"Affaire {affaire_id} introuvable")
+
+        if _table_exists(conn, "affaire_change_events"):
+            conn.execute(
+                """
+                DELETE FROM affaire_change_items
+                WHERE event_id IN (
+                    SELECT id FROM affaire_change_events WHERE affaire_id = ?
+                )
+                """,
+                (affaire_id,),
+            )
+            conn.execute(
+                "DELETE FROM affaire_change_events WHERE affaire_id = ?",
+                (affaire_id,),
+            )
+
+        if _table_exists(conn, "affaire_client_baselines"):
+            conn.execute(
+                """
+                UPDATE affaire_client_baselines SET superseded_by_id = NULL
+                WHERE affaire_id = ?
+                """,
+                (affaire_id,),
+            )
+
+        cur = conn.execute("DELETE FROM affaires WHERE id = ?", (affaire_id,))
+        if cur.rowcount == 0:
+            raise LookupError(f"Affaire {affaire_id} introuvable")
         conn.commit()
     finally:
         conn.close()

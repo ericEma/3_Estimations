@@ -104,12 +104,14 @@ function deleteAffaireFromBtn(btn) {
     if (profil) url += '?profil=' + encodeURIComponent(profil);
     fetch(url, { method: 'POST' })
         .then(function (r) {
-            if (!r.ok) return Promise.reject(new Error('HTTP ' + r.status));
-            return r.json();
+            return r.json().then(function (data) {
+                if (!r.ok) throw new Error(data.message || ('HTTP ' + r.status));
+                return data;
+            });
         })
         .then(function () { location.reload(); })
-        .catch(function () {
-            alert('Suppression impossible (réseau ou serveur).');
+        .catch(function (err) {
+            alert(err.message || 'Suppression impossible (réseau ou serveur).');
         });
 }
 </script>

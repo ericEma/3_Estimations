@@ -3,18 +3,407 @@
 {% block page_subtitle %}Statistiques / ratios{% endblock %}
 
 {% block content %}
-<div class="page-panel">
+<div class="page-panel stats-page">
+
   <div class="page-panel-hd">
     <h1 class="page-panel-title">Statistiques / ratios</h1>
     <p class="page-panel-desc">
-      Tableaux de bord à venir : nombre d'estimations par type de bâtiment,
-      prix moyens des ratios CFO / CFA / PV par typologie, etc.
+      Référentiel des devis Entreprises importés - page en lecture seule.
+      Ratios actualisés pour l'année en cours (3 %/an + pondération par rapport à la jeunesse du devis).
     </p>
   </div>
-  <div class="stats-placeholder">
-    <div class="stats-placeholder-icon">📊</div>
-    <p>Fonctionnalité en cours de développement.</p>
-    <p class="stats-placeholder-sub">Les données du référentiel et des affaires seront agrégées ici.</p>
+
+  <!-- Agrégats par typologie -->
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-header">
+      <span class="card-title">Moyennes par type de bâtiment</span>
+      <span style="font-size:12px;color:var(--text-muted)">Année réf. {{ annee_reference }}</span>
+    </div>
+    {% if aggregates %}
+    <div class="stats-table-wrap">
+      <table class="stats-table">
+        <thead>
+          <tr>
+            <th>Typologie</th>
+            <th>CFO €/m²</th>
+            <th>CFA €/m²</th>
+            <th>CFO+CFA €/m²</th>
+            <th>PV €/kWc</th>
+            <th>Fiabilité</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for cat, lots in agg_by_cat.items()|sort %}
+          <tr>
+            <td><strong>{{ cat }}</strong></td>
+            <td>
+              {% if lots.get('CFO') %}
+                {{ '%.2f'|format(lots.CFO.ratio_actualise) }}
+                <span class="stats-sub">n={{ lots.CFO.nb_sources }}</span>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% if lots.get('CFA') %}
+                {{ '%.2f'|format(lots.CFA.ratio_actualise) }}
+                <span class="stats-sub">n={{ lots.CFA.nb_sources }}</span>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% if lots.get('CFO_CFA') %}
+                {{ '%.2f'|format(lots.CFO_CFA.ratio_actualise) }}
+                <span class="stats-sub">n={{ lots.CFO_CFA.nb_sources }}</span>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% if lots.get('PV') %}
+                {{ '%.2f'|format(lots.PV.ratio_actualise) }}
+                <span class="stats-sub">n={{ lots.PV.nb_sources }}</span>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% set fc = lots.get('CFO', {}).get('fiabilite', '—') %}
+              {% set ff = lots.get('CFA', {}).get('fiabilite', '—') %}
+              <span class="fiab-{{ fc|lower }}">{{ fc }}</span>
+              {% if ff != fc %} / {{ ff }}{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="stats-empty">Aucun agrégat — importez des devis via <a href="{{ url_for('import_page') }}">Import devis</a>.</p>
+    {% endif %}
   </div>
+
+  <!-- Parts typologie (imputation total seul) -->
+  {% if shares %}
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-header">
+      <span class="card-title">Profils de répartition (devis total seul)</span>
+    </div>
+    <div class="stats-table-wrap">
+      <table class="stats-table stats-table-compact">
+        <thead>
+          <tr>
+            <th>Typologie</th>
+            <th>% CFO</th>
+            <th>% CFA</th>
+            <th>% PV</th>
+            <th>Sources complètes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for sh in shares %}
+          <tr>
+            <td>{{ sh.category_name }}</td>
+            <td>{{ '%.1f'|format(sh.share_cfo * 100) }} %</td>
+            <td>{{ '%.1f'|format(sh.share_cfa * 100) }} %</td>
+            <td>{{ '%.1f'|format(sh.share_pv * 100) }} %</td>
+            <td>{{ sh.nb_full_sources }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Devis sources -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Devis sources (<span id="src-count-visible">{{ sources|length }}</span> / {{ sources|length }})</span>
+    </div>
+    {% if sources %}
+    <div class="stats-src-filters">
+      <div class="stats-filter-field">
+        <label for="filter-typo">Typologie</label>
+        <select id="filter-typo" class="form-control stats-filter-input stats-filter-select">
+          <option value="">Toutes</option>
+        </select>
+      </div>
+      <div class="stats-filter-field">
+        <label for="filter-year-min">Année de</label>
+        <select id="filter-year-min" class="form-control stats-filter-input stats-filter-select">
+          <option value="">—</option>
+        </select>
+      </div>
+      <div class="stats-filter-field">
+        <label for="filter-year-max">Année à</label>
+        <select id="filter-year-max" class="form-control stats-filter-input stats-filter-select">
+          <option value="">—</option>
+        </select>
+      </div>
+      <div class="stats-filter-field">
+        <label for="filter-sdo-min">SDO min (m²)</label>
+        <input type="number" id="filter-sdo-min" class="form-control stats-filter-input"
+               min="0" step="1" placeholder="Min">
+      </div>
+      <div class="stats-filter-field">
+        <label for="filter-sdo-max">SDO max (m²)</label>
+        <input type="number" id="filter-sdo-max" class="form-control stats-filter-input"
+               min="0" step="1" placeholder="Max">
+      </div>
+      <div class="stats-filter-actions">
+        <button type="button" id="filter-src-reset" class="btn btn-sm btn-secondary">Réinitialiser</button>
+      </div>
+    </div>
+    <div class="stats-table-wrap">
+      <table class="stats-table" id="src-table">
+        <thead>
+          <tr>
+            <th>Projet</th>
+            <th class="sortable" data-sort="category" title="Trier">Typologie <span class="sort-ind"></span></th>
+            <th class="sortable" data-sort="date" title="Trier">Date <span class="sort-ind"></span></th>
+            <th class="sortable" data-sort="sdo" title="Trier">SDO <span class="sort-ind"></span></th>
+            <th>Total HT</th>
+            <th>CFO / CFA / PV</th>
+            <th>Ratios act.</th>
+            <th>Détail</th>
+            <th>Origine</th>
+          </tr>
+        </thead>
+        <tbody id="src-tbody">
+          {% for s in sources %}
+          <tr class="src-row"
+              data-category="{{ s.category_name }}"
+              data-date="{{ (s.devis_date or '')[:10] }}"
+              data-year="{{ (s.devis_date or '')[:4] }}"
+              data-sdo="{{ s.surface_sdo | int }}">
+            <td>
+              <div style="font-weight:600">{{ s.name }}</div>
+              <div style="font-size:11px;color:var(--text-muted)">{{ s.source_file or '—' }}</div>
+            </td>
+            <td>{{ s.category_name }}</td>
+            <td>{{ s.devis_date | date_fr }}</td>
+            <td>{{ s.surface_sdo | int }} m²</td>
+            <td>{{ s.total_ht | eur if s.total_ht else '—' }}</td>
+            <td style="font-size:12px">
+              {{ (s.total_ht_cfo or 0) | int }} /
+              {{ (s.total_ht_cfa or 0) | int }} /
+              {{ (s.total_ht_pv or 0) | int }} €
+            </td>
+            <td style="font-size:12px">
+              {% if s.ratio_cfo_m2_actualise %}{{ '%.1f'|format(s.ratio_cfo_m2_actualise) }}{% else %}—{% endif %}
+              /
+              {% if s.ratio_cfa_m2_actualise %}{{ '%.1f'|format(s.ratio_cfa_m2_actualise) }}{% else %}—{% endif %}
+              /
+              {% if s.ratio_pv_kwc_actualise %}{{ '%.1f'|format(s.ratio_pv_kwc_actualise) }}{% else %}—{% endif %}
+            </td>
+            <td>
+              <span class="badge-detail badge-{{ s.detail_level }}">{{ s.detail_level }}</span>
+              {% if s.imputed %}<span class="badge-imputed">IMPUTÉ</span>{% endif %}
+            </td>
+            <td>
+              {% if s.source == 'excel_archive' %}
+              <span class="badge-src badge-src-excel">Excel</span>
+              {% elif s.source == 'devis_import' %}
+              <span class="badge-src badge-src-devis">Import</span>
+              {% else %}
+              {{ s.source or '—' }}
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p id="src-filter-empty" class="stats-empty" style="display:none">Aucun devis ne correspond aux filtres.</p>
+    </div>
+    {% else %}
+    <p class="stats-empty">Aucun devis en référentiel ratios.</p>
+    {% endif %}
+  </div>
+
 </div>
+
+<style>
+.stats-table-wrap { overflow-x: auto; }
+.stats-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.stats-table th, .stats-table td {
+  padding: 10px 12px; text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.stats-table th {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--text-muted); font-weight: 700;
+}
+.stats-sub { font-size: 10px; color: var(--text-muted); margin-left: 4px; }
+.stats-empty { padding: 24px; color: var(--text-muted); text-align: center; }
+.badge-detail {
+  display: inline-block; padding: 2px 6px; border-radius: 4px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  background: var(--bg-base); color: var(--text-muted);
+}
+.badge-full { color: var(--green, #6f6); }
+.badge-total_only { color: var(--orange, #fa0); }
+.badge-imputed {
+  display: inline-block; margin-left: 4px; padding: 2px 5px;
+  font-size: 9px; background: #804A3D33; color: var(--lot, #804A3D);
+  border-radius: 3px;
+}
+.badge-src { display: inline-block; padding: 2px 6px; font-size: 10px; border-radius: 3px; }
+.badge-src-excel { background: rgba(36,169,181,.15); color: var(--accent2); }
+.badge-src-devis { background: rgba(213,243,17,.12); color: var(--accent); }
+.fiab-ok { color: var(--green, #6f6); }
+.fiab-prudence, .fiab-source_unique { color: var(--orange, #fa0); }
+.fiab-impute { color: var(--lot, #804A3D); }
+.stats-src-filters {
+  display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: flex-end;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  background: var(--bg-base);
+}
+.stats-filter-field { display: flex; flex-direction: column; gap: 4px; min-width: 130px; }
+.stats-filter-field label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--text-muted); font-weight: 700;
+}
+.stats-filter-input { font-size: 13px; padding: 6px 8px; min-width: 0; }
+.stats-filter-select {
+  min-width: 150px; color: var(--text); cursor: pointer;
+}
+.stats-filter-select option { background: var(--bg3); color: var(--text); }
+.stats-filter-actions { padding-bottom: 2px; }
+.src-row.hidden { display: none; }
+.stats-table th.sortable {
+  cursor: pointer; user-select: none; white-space: nowrap;
+}
+.stats-table th.sortable:hover { color: var(--accent2); }
+.stats-table th.sortable.sort-asc .sort-ind::after { content: ' ▲'; color: var(--accent); }
+.stats-table th.sortable.sort-desc .sort-ind::after { content: ' ▼'; color: var(--accent); }
+</style>
+
+<script>
+(function () {
+    const tbody = document.getElementById('src-tbody');
+    const typo = document.getElementById('filter-typo');
+    const yearMin = document.getElementById('filter-year-min');
+    const yearMax = document.getElementById('filter-year-max');
+    const sdoMin = document.getElementById('filter-sdo-min');
+    const sdoMax = document.getElementById('filter-sdo-max');
+    const resetBtn = document.getElementById('filter-src-reset');
+    const countEl = document.getElementById('src-count-visible');
+    const emptyEl = document.getElementById('src-filter-empty');
+    const sortHeaders = document.querySelectorAll('#src-table th.sortable');
+
+    if (!tbody) return;
+
+    let sortCol = 'category';
+    let sortDir = 1;
+
+    function getRows() {
+        return Array.from(tbody.querySelectorAll('.src-row'));
+    }
+
+    function fillSelect(select, values, allLabel) {
+        const prev = select.value;
+        select.innerHTML = '';
+        const optAll = document.createElement('option');
+        optAll.value = '';
+        optAll.textContent = allLabel || '—';
+        select.appendChild(optAll);
+        values.forEach(v => {
+            const opt = document.createElement('option');
+            opt.value = v;
+            opt.textContent = v;
+            select.appendChild(opt);
+        });
+        if (prev && values.includes(prev)) select.value = prev;
+    }
+
+    function initFilterOptions() {
+        const rows = getRows();
+        const categories = [...new Set(rows.map(r => r.dataset.category).filter(Boolean))].sort(
+            (a, b) => a.localeCompare(b, 'fr')
+        );
+        const years = [...new Set(rows.map(r => r.dataset.year).filter(Boolean))].sort(
+            (a, b) => parseInt(a, 10) - parseInt(b, 10)
+        );
+        fillSelect(typo, categories, 'Toutes');
+        fillSelect(yearMin, years, '—');
+        fillSelect(yearMax, years, '—');
+    }
+
+    function compareRows(a, b, col) {
+        if (col === 'category') {
+            return (a.dataset.category || '').localeCompare(b.dataset.category || '', 'fr');
+        }
+        if (col === 'date') {
+            return (a.dataset.date || '').localeCompare(b.dataset.date || '');
+        }
+        if (col === 'sdo') {
+            return (parseFloat(a.dataset.sdo) || 0) - (parseFloat(b.dataset.sdo) || 0);
+        }
+        return 0;
+    }
+
+    function applySort() {
+        if (!sortCol) return;
+        const rows = getRows();
+        rows.sort((a, b) => compareRows(a, b, sortCol) * sortDir);
+        rows.forEach(r => tbody.appendChild(r));
+        sortHeaders.forEach(th => {
+            th.classList.remove('sort-asc', 'sort-desc');
+            if (th.dataset.sort === sortCol) {
+                th.classList.add(sortDir === 1 ? 'sort-asc' : 'sort-desc');
+            }
+        });
+    }
+
+    function applySrcFilters() {
+        const cat = typo.value;
+        const yMin = yearMin.value ? parseInt(yearMin.value, 10) : null;
+        const yMax = yearMax.value ? parseInt(yearMax.value, 10) : null;
+        const sdMin = sdoMin.value !== '' ? parseFloat(sdoMin.value) : null;
+        const sdMax = sdoMax.value !== '' ? parseFloat(sdoMax.value) : null;
+        let visible = 0;
+
+        getRows().forEach(row => {
+            let show = true;
+            if (cat && row.dataset.category !== cat) show = false;
+            const y = parseInt(row.dataset.year, 10);
+            if (show && yMin != null && !isNaN(y) && y < yMin) show = false;
+            if (show && yMax != null && !isNaN(y) && y > yMax) show = false;
+            const sdo = parseFloat(row.dataset.sdo);
+            if (show && sdMin != null && !isNaN(sdo) && sdo < sdMin) show = false;
+            if (show && sdMax != null && !isNaN(sdo) && sdo > sdMax) show = false;
+            row.classList.toggle('hidden', !show);
+            if (show) visible++;
+        });
+
+        if (countEl) countEl.textContent = visible;
+        if (emptyEl) emptyEl.style.display = visible === 0 ? 'block' : 'none';
+    }
+
+    function resetSrcFilters() {
+        typo.value = '';
+        yearMin.value = '';
+        yearMax.value = '';
+        sdoMin.value = '';
+        sdoMax.value = '';
+        applySrcFilters();
+    }
+
+    sortHeaders.forEach(th => {
+        th.addEventListener('click', () => {
+            const col = th.dataset.sort;
+            if (sortCol === col) {
+                sortDir = -sortDir;
+            } else {
+                sortCol = col;
+                sortDir = 1;
+            }
+            applySort();
+        });
+    });
+
+    [typo, yearMin, yearMax, sdoMin, sdoMax].forEach(el => {
+        el.addEventListener('change', applySrcFilters);
+        el.addEventListener('input', applySrcFilters);
+    });
+    resetBtn.addEventListener('click', resetSrcFilters);
+
+    initFilterOptions();
+    applySort();
+})();
+</script>
 {% endblock %}

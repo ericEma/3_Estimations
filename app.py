@@ -10,6 +10,7 @@ Lancement :
 import os
 import sys
 import json
+import sqlite3
 import time
 import threading
 import subprocess
@@ -55,6 +56,9 @@ from db_profiles import PROFILE_LABELS, normalize_profile, normalize_profile_fil
 from scripts.engine_ratios import get_dpgf_tree_with_ratios, compute_ratios
 from scripts.engine_bibliotheque_ratios import compute_bibliotheque_lot_totals
 from scripts.export_excel import export_dpgf_excel
+import engine_ratio_referentiel as ratio_ref
+import affaire_baselines
+import affaire_drift
 from loguru import logger
 
 # ─── Logging erreurs applicatives ────────────────────────────────────────────
@@ -245,34 +249,81 @@ def compute_affaire_preview_estimation(
     }
 
 
-def _compute_preview_context(affaire=None, price_profile=None):
-    """Contexte initial page Création / Édition (date MAJ BDD)."""
+def _typology_ratio_defaults(category_id=None, affaire=None, price_profile=None):
+    """Ratios par typologie (estimation_ratios.db) avec repli bibliothèque profil."""
     surface = 1000
     kwc = 100
     prof = price_profile
+    cat_id = category_id
     if affaire:
         surface = affaire.get('surface_sdo') or surface
         kwc = affaire.get('puissance_pv_kwc') or kwc
         prof = affaire.get('price_profile') or prof
+        cat_id = cat_id or affaire.get('category_id')
+
+    cat_name = ratio_ref.category_name_from_id(cat_id, prof) if cat_id else None
+    typo, ratio_source_kind = ratio_ref.resolve_category_ratios(cat_name)
     biblio = compute_bibliotheque_lot_totals(surface, kwc, profile=prof)
+
+    if ratio_source_kind == 'typologie':
+        ratio_source = 'typologie'
+    elif ratio_source_kind == 'moyenne_autres':
+        ratio_source = 'typologie_moyenne_autres'
+    else:
+        ratio_source = 'bibliotheque'
+
+    def _pick(key_typo, key_biblio):
+        if typo and typo.get(key_typo) is not None:
+            return typo[key_typo]
+        return biblio[key_biblio]
+
     return {
         'maj_date_bdd': _preview_maj_date(prof),
-        'preview_ratio_global_cfo_m2': (
-            models.optional_positive_float(affaire.get('ratio_global_cfo_m2')) if affaire else None
-        ) or biblio['ratio_m2_cfo'],
-        'preview_ratio_global_cfa_m2': (
-            models.optional_positive_float(affaire.get('ratio_global_cfa_m2')) if affaire else None
-        ) or biblio['ratio_m2_cfa'],
-        'preview_ratio_global_pv_kwc': (
-            models.optional_positive_float(affaire.get('ratio_global_pv_kwc')) if affaire else None
-        ) or biblio['ratio_kwc_pv'],
+        'ratio_source': ratio_source,
+        'typology_meta': typo,
+        'preview_ratio_global_cfo_m2': _pick('ratio_m2_cfo', 'ratio_m2_cfo'),
+        'preview_ratio_global_cfa_m2': _pick('ratio_m2_cfa', 'ratio_m2_cfa'),
+        'preview_ratio_global_pv_kwc': _pick('ratio_kwc_pv', 'ratio_kwc_pv'),
     }
+
+
+def _compute_preview_context(affaire=None, price_profile=None):
+    """Contexte initial page Création / Édition (date MAJ BDD)."""
+    return _typology_ratio_defaults(affaire=affaire, price_profile=price_profile)
+
+
+def _resolve_preview_ratio_inputs(cat_id, request_args, price_profile=None):
+    """Ratios preview : statistiques typologie prioritaires sauf saisie manuelle."""
+    defaults = _typology_ratio_defaults(category_id=cat_id, price_profile=price_profile)
+    manual = request_args.get('ratio_manual') == '1'
+    if defaults.get('ratio_source') in ('typologie', 'typologie_moyenne_autres') and not manual:
+        return (
+            defaults['preview_ratio_global_cfo_m2'],
+            defaults['preview_ratio_global_cfa_m2'],
+            defaults['preview_ratio_global_pv_kwc'],
+            defaults,
+        )
+    return (
+        request_args.get('ratio_global_cfo_m2') or defaults['preview_ratio_global_cfo_m2'],
+        request_args.get('ratio_global_cfa_m2') or defaults['preview_ratio_global_cfa_m2'],
+        request_args.get('ratio_global_pv_kwc') or defaults['preview_ratio_global_pv_kwc'],
+        defaults,
+    )
 
 
 @app.route('/api/affaire/preview_estimation')
 def api_affaire_preview_estimation():
     """Calcul temps réel de l'estimation prévisionnelle (fiche affaire)."""
     try:
+        cat_id = request.args.get('category_id')
+        prof = (
+            models.resolve_profile_from_category_id(cat_id)
+            if cat_id
+            else normalize_profile(request.args.get('profil')) if request.args.get('profil') else None
+        )
+        ratio_cfo, ratio_cfa, ratio_pv, defaults = _resolve_preview_ratio_inputs(
+            cat_id, request.args, price_profile=prof
+        )
         payload = compute_affaire_preview_estimation(
             surface_sdo=request.args.get('surface_sdo', 1000),
             puissance_pv_kwc=request.args.get('puissance_pv_kwc', 100),
@@ -282,15 +333,13 @@ def api_affaire_preview_estimation():
             coef_complexity_cfo=request.args.get('coef_complexity_cfo', 1),
             coef_complexity_cfa=request.args.get('coef_complexity_cfa', 1),
             pv_system_type=request.args.get('pv_system_type', 'toiture'),
-            ratio_global_cfo_m2=request.args.get('ratio_global_cfo_m2'),
-            ratio_global_cfa_m2=request.args.get('ratio_global_cfa_m2'),
-            ratio_global_pv_kwc=request.args.get('ratio_global_pv_kwc'),
-            price_profile=(
-                models.resolve_profile_from_category_id(request.args.get('category_id'))
-                if request.args.get('category_id')
-                else normalize_profile(request.args.get('profil')) if request.args.get('profil') else None
-            ),
+            ratio_global_cfo_m2=ratio_cfo,
+            ratio_global_cfa_m2=ratio_cfa,
+            ratio_global_pv_kwc=ratio_pv,
+            price_profile=prof,
         )
+        payload['ratio_source'] = defaults.get('ratio_source')
+        payload['typology_meta'] = defaults.get('typology_meta')
         return jsonify({'ok': True, **payload})
     except Exception as exc:
         logger.exception('preview_estimation failed')
@@ -364,10 +413,34 @@ def affaire_edit(affaire_id):
             'notes':               request.form.get('notes'),
             'statut':              affaire.get('statut', 'brouillon'),
         }
-        models.update_affaire(affaire_id, data)
+        meta = models.update_affaire(affaire_id, data)
+        if meta.get('phase_changed'):
+            flash(
+                f"Phase {meta['old_phase']} clôturée — estimation remise automatiquement.",
+                'success',
+            )
+        if meta.get('category_changed'):
+            old_r = meta.get('old_ratios') or {}
+            flash(
+                "Ratios modifiés suite au changement de type de bâtiment. "
+                f"Anciens ratios : CFO {old_r.get('cfo_m2') or '—'} €/m², "
+                f"CFA {old_r.get('cfa_m2') or '—'} €/m², "
+                f"PV {old_r.get('pv_kwc') or '—'} €/kWc.",
+                'warning',
+            )
         return redirect(url_for(
             'affaire_estimation', affaire_id=affaire_id, profil=profil
         ))
+
+    active_baseline = affaire_baselines.get_active_baseline(
+        affaire_id, affaire_baselines.SCOPE_FICHE, profil
+    )
+    baseline_history = affaire_baselines.list_baselines(
+        affaire_id, affaire_baselines.SCOPE_FICHE, profil, limit=20
+    )
+    pending_drift = affaire_drift.get_pending_event(
+        affaire_id, affaire_drift.SCOPE_FICHE, profil
+    )
 
     return render_template('affaire_new.html',
                            categories=categories,
@@ -375,6 +448,9 @@ def affaire_edit(affaire_id):
                            edit_mode=True,
                            current_affaire_id=affaire_id,
                            price_profile=profil,
+                           active_baseline=active_baseline,
+                           baseline_history=baseline_history,
+                           pending_drift=pending_drift,
                            **_compute_preview_context(affaire, profil))
 
 
@@ -488,6 +564,15 @@ def affaire_estimation(affaire_id):
     chapter_state = models.get_estimation_chapter_state(affaire_id)
     section_state = models.get_estimation_section_state(affaire_id)
     affaires = models.get_affaires()
+    active_baseline = affaire_baselines.get_active_baseline(
+        affaire_id, affaire_baselines.SCOPE_ESTIMATION, profil
+    )
+    baseline_history = affaire_baselines.list_baselines(
+        affaire_id, affaire_baselines.SCOPE_ESTIMATION, profil, limit=20
+    )
+    pending_drift = affaire_drift.get_pending_event(
+        affaire_id, affaire_drift.SCOPE_ESTIMATION, profil
+    )
 
     return render_template(
         'affaire_estimation.html',
@@ -501,6 +586,9 @@ def affaire_estimation(affaire_id):
         totals=totals,
         chapter_state=chapter_state,
         section_state=section_state,
+        active_baseline=active_baseline,
+        baseline_history=baseline_history,
+        pending_drift=pending_drift,
     )
 
 
@@ -555,11 +643,237 @@ def affaire_estimation_save(affaire_id):
         changes = raw_ch
     try:
         out = models.save_estimation_changes(affaire_id, changes)
+        _, profil = _affaire_or_404(affaire_id)
+        drift = affaire_drift.check_estimation_drift(affaire_id, profil)
+        out['drift'] = _serialize_drift_response(drift)
         return jsonify(out)
     except Exception as exc:
         logger.error(f"estimation/save FAILED | affaire_id={affaire_id} | {exc}")
         logger.exception(exc)
         return jsonify({'status': 'error', 'code': 500, 'message': str(exc)}), 500
+
+
+@app.route('/api/affaire/<int:affaire_id>/estimation/export_dpgf')
+def affaire_estimation_export_dpgf(affaire_id):
+    """Export DPGF Excel depuis le snapshot page Estimation."""
+    affaire, profil = _affaire_or_404(affaire_id)
+    if not affaire:
+        return jsonify({'ok': False, 'message': 'Affaire introuvable'}), 404
+    try:
+        _rapport_dir = Path(__file__).parent / 'Rapport_Excel'
+        sys.path.insert(0, str(_rapport_dir))
+        from generer_dpgf import generer  # noqa: PLC0415
+
+        sdo = float(affaire.get('surface_sdo') or 0)
+        nom_affaire = affaire.get('name') or f'Affaire {affaire_id}'
+
+        catalog = models.get_estimation_catalog_rows(affaire_id)
+        section_state = models.get_estimation_section_state(affaire_id)
+
+        # Index articles par (chapitre, section)
+        from collections import defaultdict
+        articles_by_section = defaultdict(list)
+        for row in catalog:
+            ch = (row.get('chapter') or '').strip()
+            sec = (row.get('section') or '').strip()
+            desig = (row.get('designation') or '').strip()
+            if not ch or not sec:
+                logger.warning(f'export_dpgf | ligne sans chapitre/section ignorée | line_id={row.get("line_id")}')
+                continue
+            if not desig:
+                logger.warning(f'export_dpgf | article sans désignation ignoré | line_id={row.get("line_id")}')
+                continue
+            articles_by_section[(ch, sec)].append(row)
+
+        # Construction hiérarchie lots → chapitres → articles
+        lots_dict: dict = {}
+        lot_order: list = []
+
+        for sec_row in section_state:
+            if not sec_row.get('is_included'):
+                continue
+            ch = sec_row['chapter']
+            sec = sec_row['section']
+            use_macro = sec_row.get('use_macro', False)
+
+            if use_macro:
+                ratio = float(sec_row.get('ratio_m2_override') or 0)
+                qty_val = float(sec_row.get('qty') or sdo)
+                if ratio <= 0:
+                    logger.info(f'export_dpgf | section macro sans ratio ignorée | {ch}|{sec}')
+                    continue
+                unit_val = 'kWc' if 'photovolta' in ch.lower() else 'm²'
+                chapitres_articles = [{'designation': sec, 'unite': unit_val,
+                                        'q_moe': qty_val, 'q_entreprise': None, 'pu': ratio}]
+            else:
+                rows = articles_by_section.get((ch, sec), [])
+                chapitres_articles = []
+                for r in rows:
+                    q = float(r.get('quantity') or 0)
+                    pu = float(r.get('unit_price_ht') or 0)
+                    if q <= 0 or pu <= 0:
+                        continue
+                    chapitres_articles.append({
+                        'designation': (r.get('designation') or '').strip(),
+                        'unite': r.get('unit') or '',
+                        'q_moe': q,
+                        'q_entreprise': None,
+                        'pu': pu,
+                    })
+                if not chapitres_articles:
+                    logger.info(f'export_dpgf | section vide ignorée | {ch}|{sec}')
+                    continue
+
+            if ch not in lots_dict:
+                lots_dict[ch] = []
+                lot_order.append(ch)
+            lots_dict[ch].append({'nom': sec, 'articles': chapitres_articles})
+
+        lots = [{'nom': ch, 'chapitres': lots_dict[ch]} for ch in lot_order if lots_dict.get(ch)]
+        if not lots:
+            return jsonify({'ok': False, 'message': 'Aucune donnée à exporter'}), 400
+
+        nb_chap = sum(len(l['chapitres']) for l in lots)
+        nb_art = sum(len(c['articles']) for l in lots for c in l['chapitres'])
+        logger.info(f'export_dpgf | affaire={affaire_id} | lots={len(lots)} chapitres={nb_chap} articles={nb_art}')
+
+        modele_path = str(_rapport_dir / 'Modele_de_rendu_Excel_propre.xlsx')
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        pending = affaire_drift.get_pending_event(
+            affaire_id, affaire_drift.SCOPE_ESTIMATION, profil
+        )
+        if pending:
+            return jsonify({
+                'ok': False,
+                'message': 'Justifications ±3 % en attente — complétez le formulaire de dérive.',
+            }), 400
+
+        justif_map = affaire_drift.get_justifications_for_export(affaire_id, profil)
+        synthesis = affaire_drift.get_latest_synthesis_rows(affaire_id, profil)
+        export_kw = {}
+        if justif_map or synthesis:
+            export_kw['justifications'] = justif_map or {}
+            export_kw['synthesis_rows'] = synthesis or None
+
+        generer(
+            modele_path,
+            {'affaire': nom_affaire, 'lots': lots},
+            tmp_path,
+            **export_kw,
+        )
+        logger.info(f'export_dpgf | fichier généré | {tmp_path}')
+
+        ts = datetime.now().strftime('%Y%m%d_%H%M')
+        safe_name = re.sub(r'[^\w\-]', '_', nom_affaire)[:40]
+        download_name = f'DPGF_{safe_name}_{ts}.xlsx'
+
+        return send_file(
+            tmp_path,
+            as_attachment=True,
+            download_name=download_name,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception:
+        logger.exception('export_dpgf failed')
+        return jsonify({'ok': False, 'message': 'Erreur lors de la génération Excel'}), 500
+
+
+@app.route('/api/affaire/<int:affaire_id>/fiche/export')
+def affaire_fiche_export(affaire_id):
+    """Export Excel carte client sommaire (fiche affaire)."""
+    affaire, profil = _affaire_or_404(affaire_id)
+    if not affaire:
+        return jsonify({'ok': False, 'message': 'Affaire introuvable'}), 404
+    try:
+        _rapport_dir = Path(__file__).parent / 'Rapport_Excel'
+        sys.path.insert(0, str(_rapport_dir))
+        from generer_carte_client import generer as generer_carte  # noqa: PLC0415
+
+        defaults = _typology_ratio_defaults(affaire=affaire, price_profile=profil)
+        preview = compute_affaire_preview_estimation(
+            surface_sdo=affaire.get('surface_sdo'),
+            puissance_pv_kwc=affaire.get('puissance_pv_kwc'),
+            taux_phase=affaire.get('taux_phase'),
+            taux_incertitude=affaire.get('taux_incertitude'),
+            coef_risque=affaire.get('coef_risque'),
+            coef_complexity_cfo=affaire.get('coef_complexity_cfo'),
+            coef_complexity_cfa=affaire.get('coef_complexity_cfa'),
+            pv_system_type=affaire.get('pv_system_type'),
+            ratio_global_cfo_m2=affaire.get('ratio_global_cfo_m2'),
+            ratio_global_cfa_m2=affaire.get('ratio_global_cfa_m2'),
+            ratio_global_pv_kwc=affaire.get('ratio_global_pv_kwc'),
+            price_profile=profil,
+        )
+        cat_name = ratio_ref.category_name_from_id(affaire.get('category_id'), profil)
+        sdo = float(affaire.get('surface_sdo') or 0)
+        active = affaire_baselines.get_active_baseline(
+            affaire_id, affaire_baselines.SCOPE_FICHE, profil
+        )
+        baseline_label = None
+        if active:
+            baseline_label = (
+                f"{active.get('phase_etude')} v{active.get('version_num')} · "
+                f"{int(active.get('total_ht') or 0):,} € HT · "
+                f"{(active.get('validated_at') or '')[:10]}"
+            ).replace(',', ' ')
+
+        pv_type_labels = {
+            'toiture': 'Toiture (×1,0)',
+            'ib': 'Intégration bâti (×1,3)',
+            'ombriere': 'Ombrière (×1,55)',
+        }
+        data = {
+            'affaire_name': affaire.get('name'),
+            'client': affaire.get('client'),
+            'phase_etude': affaire.get('phase_etude'),
+            'category_name': cat_name,
+            'surface_sdo': int(sdo) if sdo else sdo,
+            'puissance_pv_kwc': affaire.get('puissance_pv_kwc'),
+            'kva_cible': affaire.get('kva_cible'),
+            'ratio_m2_cfo': preview.get('ratio_m2_cfo'),
+            'ratio_m2_cfa': preview.get('ratio_m2_cfa'),
+            'ratio_kwc_pv': preview.get('ratio_kwc_pv'),
+            'ratio_source_label': {
+                'typologie': 'Référentiel devis réels (typologie)',
+                'typologie_moyenne_autres': 'Référentiel devis réels (moyenne typologies Autres)',
+                'bibliotheque': 'Base de prix bibliothèque (repli)',
+            }.get(defaults.get('ratio_source'), 'Base de prix bibliothèque (repli)'),
+            'taux_phase': affaire.get('taux_phase'),
+            'taux_incertitude': affaire.get('taux_incertitude'),
+            'coef_risque': affaire.get('coef_risque'),
+            'coef_complexity_cfo': affaire.get('coef_complexity_cfo'),
+            'coef_complexity_cfa': affaire.get('coef_complexity_cfa'),
+            'pv_system_type': pv_type_labels.get(
+                models.normalize_pv_system_type(affaire.get('pv_system_type')),
+                affaire.get('pv_system_type'),
+            ),
+            'prix_cfo': preview.get('prix_cfo'),
+            'prix_cfa': preview.get('prix_cfa'),
+            'prix_pv': preview.get('prix_pv'),
+            'prix_total': preview.get('prix_total'),
+            'ratio_total_m2': round(preview['prix_total'] / sdo, 2) if sdo > 0 else None,
+            'baseline_label': baseline_label,
+            'export_date': datetime.now().strftime('%d/%m/%Y'),
+        }
+
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        generer_carte(data, tmp_path)
+
+        safe_name = re.sub(r'[^\w\-]', '_', affaire.get('name') or f'affaire_{affaire_id}')[:40]
+        ts = datetime.now().strftime('%Y%m%d_%H%M')
+        download_name = f'Carte_client_{safe_name}_{ts}.xlsx'
+        return send_file(
+            tmp_path,
+            as_attachment=True,
+            download_name=download_name,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception:
+        logger.exception('fiche export failed')
+        return jsonify({'ok': False, 'message': 'Erreur export carte client'}), 500
 
 
 @app.route('/api/affaire/<int:affaire_id>/save', methods=['POST'])
@@ -614,8 +928,21 @@ def affaire_chapter_settings(affaire_id):
 
 @app.route('/api/affaire/<int:affaire_id>/delete', methods=['POST'])
 def affaire_delete(affaire_id):
-    models.delete_affaire(affaire_id)
-    return jsonify({'status': 'ok'})
+    profil = request.args.get('profil')
+    try:
+        models.delete_affaire(affaire_id, profile=profil)
+    except LookupError as exc:
+        return jsonify({'ok': False, 'message': str(exc)}), 404
+    except sqlite3.IntegrityError:
+        logger.exception('delete affaire integrity error id=%s profil=%s', affaire_id, profil)
+        return jsonify({
+            'ok': False,
+            'message': 'Suppression impossible (contraintes base de données).',
+        }), 409
+    except Exception:
+        logger.exception('delete affaire failed id=%s profil=%s', affaire_id, profil)
+        return jsonify({'ok': False, 'message': 'Erreur serveur lors de la suppression.'}), 500
+    return jsonify({'ok': True, 'status': 'ok'})
 
 
 @app.route('/api/affaire/<int:affaire_id>/export')
@@ -761,8 +1088,311 @@ def ratios_page():
 
 @app.route('/statistiques')
 def statistiques_page():
-    """Tableaux de bord ratios / typologie bâtiment (en cours de développement)."""
-    return render_template('statistiques.html')
+    """Référentiel ratios devis réels — consultation seule."""
+    import db_ratios
+
+    sources = sorted(
+        ratio_ref.list_sources(),
+        key=lambda s: ((s.get('category_name') or '').casefold(), s.get('devis_date') or ''),
+    )
+    aggregates = ratio_ref.list_aggregates()
+    ref_year = db_ratios.get_annee_reference()
+
+    agg_by_cat: dict = {}
+    for row in aggregates:
+        cat = row['category_name']
+        agg_by_cat.setdefault(cat, {})[row['lot']] = row
+
+    for lots in agg_by_cat.values():
+        cfo = lots.get('CFO')
+        cfa = lots.get('CFA')
+        if cfo or cfa:
+            rc = float(cfo['ratio_actualise'] if cfo else 0) + float(
+                cfa['ratio_actualise'] if cfa else 0
+            )
+            ns = max(
+                int(cfo['nb_sources']) if cfo else 0,
+                int(cfa['nb_sources']) if cfa else 0,
+            )
+            fiab = 'OK'
+            for key in ('CFO', 'CFA'):
+                f = (lots.get(key) or {}).get('fiabilite') or 'AUCUNE_REF'
+                if f in ('PRUDENCE', 'SOURCE_UNIQUE', 'IMPUTE', 'AUCUNE_REF'):
+                    fiab = f
+                    break
+            lots['CFO_CFA'] = {
+                'ratio_actualise': rc,
+                'nb_sources': ns,
+                'fiabilite': fiab,
+            }
+
+    moy_autres = ratio_ref.get_autres_typology_average()
+    if moy_autres:
+        label = 'Moyenne typologies Autres'
+        agg_by_cat[label] = {}
+        if moy_autres.get('ratio_m2_cfo') is not None:
+            agg_by_cat[label]['CFO'] = {
+                'ratio_actualise': moy_autres['ratio_m2_cfo'],
+                'nb_sources': moy_autres['nb_sources_cfo'],
+                'fiabilite': moy_autres['fiabilite_cfo'],
+            }
+        if moy_autres.get('ratio_m2_cfa') is not None:
+            agg_by_cat[label]['CFA'] = {
+                'ratio_actualise': moy_autres['ratio_m2_cfa'],
+                'nb_sources': moy_autres['nb_sources_cfa'],
+                'fiabilite': moy_autres['fiabilite_cfa'],
+            }
+        if moy_autres.get('ratio_kwc_pv') is not None:
+            agg_by_cat[label]['PV'] = {
+                'ratio_actualise': moy_autres['ratio_kwc_pv'],
+                'nb_sources': moy_autres['nb_sources_pv'],
+                'fiabilite': moy_autres['fiabilite_pv'],
+            }
+        cfo = agg_by_cat[label].get('CFO')
+        cfa = agg_by_cat[label].get('CFA')
+        if cfo or cfa:
+            agg_by_cat[label]['CFO_CFA'] = {
+                'ratio_actualise': float(cfo['ratio_actualise'] if cfo else 0)
+                + float(cfa['ratio_actualise'] if cfa else 0),
+                'nb_sources': max(
+                    int(cfo['nb_sources']) if cfo else 0,
+                    int(cfa['nb_sources']) if cfa else 0,
+                ),
+                'fiabilite': moy_autres.get('fiabilite_cfo', '—'),
+            }
+
+    shares_rows = []
+    conn = db_ratios.connect()
+    try:
+        shares_rows = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM ratio_typology_shares ORDER BY category_name"
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    return render_template(
+        'statistiques.html',
+        sources=sources,
+        aggregates=aggregates,
+        agg_by_cat=agg_by_cat,
+        shares=shares_rows,
+        annee_reference=ref_year,
+    )
+
+
+@app.route('/api/ratios/typologie')
+def api_ratios_typologie():
+    """Ratios agrégés par typologie (fiche affaire)."""
+    cat_id = request.args.get('category_id')
+    if not cat_id:
+        return jsonify({'ok': False, 'message': 'category_id requis'}), 400
+    prof = models.resolve_profile_from_category_id(cat_id)
+    cat_name = ratio_ref.category_name_from_id(cat_id, prof)
+    if not cat_name:
+        return jsonify({'ok': False, 'message': 'Typologie inconnue'}), 404
+    typo, source_kind = ratio_ref.resolve_category_ratios(cat_name)
+    if not typo:
+        return jsonify({'ok': True, 'found': False, 'category_name': cat_name})
+    return jsonify({
+        'ok': True,
+        'found': True,
+        'ratio_source_kind': source_kind,
+        **typo,
+    })
+
+
+def _serialize_drift_response(drift: dict) -> dict:
+    """Réponse JSON compacte pour le client (évite cycles / champs lourds)."""
+    out = {
+        'requires_justification': drift.get('requires_justification', False),
+        'has_reference': drift.get('has_reference', False),
+        'drift_pct': drift.get('drift_pct'),
+    }
+    event = drift.get('event') or drift.get('pending_event')
+    if event:
+        out['event_id'] = event.get('id')
+        out['drift_pct'] = event.get('drift_pct') or out.get('drift_pct')
+        out['old_total_ht'] = event.get('old_total_ht')
+        out['new_total_ht'] = event.get('new_total_ht')
+        out['items'] = [
+            {
+                'id': it.get('id'),
+                'item_type': it.get('item_type'),
+                'item_key': it.get('item_key'),
+                'label': it.get('label'),
+                'old_value': it.get('old_value'),
+                'new_value': it.get('new_value'),
+                'drift_pct': it.get('drift_pct'),
+                'justification': it.get('justification'),
+            }
+            for it in (event.get('items') or [])
+        ]
+    return out
+
+
+def _fiche_fields_from_request(data: dict) -> dict:
+    return {
+        'name': data.get('name'),
+        'category_id': data.get('category_id'),
+        'surface_sdo': data.get('surface_sdo'),
+        'kva_cible': data.get('kva_cible'),
+        'puissance_pv_kwc': data.get('puissance_pv_kwc'),
+        'ratio_global_cfo_m2': data.get('ratio_global_cfo_m2'),
+        'ratio_global_cfa_m2': data.get('ratio_global_cfa_m2'),
+        'ratio_global_pv_kwc': data.get('ratio_global_pv_kwc'),
+        'coef_complexity_cfo': data.get('coef_complexity_cfo'),
+        'coef_complexity_cfa': data.get('coef_complexity_cfa'),
+        'pv_system_type': data.get('pv_system_type'),
+        'phase_etude': data.get('phase_etude'),
+        'taux_phase': data.get('taux_phase'),
+        'taux_incertitude': data.get('taux_incertitude'),
+        'coef_risque': data.get('coef_risque'),
+    }
+
+
+@app.route('/api/affaire/<int:affaire_id>/baselines')
+def api_affaire_baselines(affaire_id):
+    affaire, profil = _affaire_or_404(affaire_id)
+    if not affaire:
+        return jsonify({'ok': False, 'message': 'Affaire introuvable'}), 404
+    scope = request.args.get('scope', affaire_baselines.SCOPE_FICHE)
+    active = affaire_baselines.get_active_baseline(affaire_id, scope, profil)
+    history = affaire_baselines.list_baselines(affaire_id, scope, profil)
+    return jsonify({'ok': True, 'active': active, 'history': history})
+
+
+@app.route('/api/affaire/<int:affaire_id>/baseline/validate', methods=['POST'])
+def api_affaire_baseline_validate(affaire_id):
+    """Valide ou re-valide une baseline (scope fiche ou estimation)."""
+    affaire, profil = _affaire_or_404(affaire_id)
+    if not affaire:
+        return jsonify({'ok': False, 'message': 'Affaire introuvable'}), 404
+    data = request.get_json(force=True) or {}
+    scope = (data.get('scope') or affaire_baselines.SCOPE_FICHE).strip().lower()
+
+    if scope == affaire_baselines.SCOPE_ESTIMATION:
+        totals = models.compute_estimation_kpis(affaire_id, profil)
+        try:
+            row = affaire_baselines.validate_estimation_baseline(
+                affaire_id,
+                profil,
+                affaire,
+                totals,
+                label=data.get('label'),
+            )
+            return jsonify({'ok': True, 'baseline': row, 'totals': totals})
+        except Exception as exc:
+            logger.exception('baseline validate estimation failed')
+            return jsonify({'ok': False, 'message': str(exc)}), 400
+
+    fiche = _fiche_fields_from_request(data)
+    prof = models.resolve_profile_from_category_id(fiche.get('category_id')) or profil
+    preview = compute_affaire_preview_estimation(
+        surface_sdo=fiche.get('surface_sdo') or affaire.get('surface_sdo'),
+        puissance_pv_kwc=fiche.get('puissance_pv_kwc') or affaire.get('puissance_pv_kwc'),
+        taux_phase=fiche.get('taux_phase') or affaire.get('taux_phase'),
+        taux_incertitude=fiche.get('taux_incertitude') or affaire.get('taux_incertitude'),
+        coef_risque=fiche.get('coef_risque') or affaire.get('coef_risque'),
+        coef_complexity_cfo=fiche.get('coef_complexity_cfo') or affaire.get('coef_complexity_cfo'),
+        coef_complexity_cfa=fiche.get('coef_complexity_cfa') or affaire.get('coef_complexity_cfa'),
+        pv_system_type=fiche.get('pv_system_type') or affaire.get('pv_system_type'),
+        ratio_global_cfo_m2=fiche.get('ratio_global_cfo_m2'),
+        ratio_global_cfa_m2=fiche.get('ratio_global_cfa_m2'),
+        ratio_global_pv_kwc=fiche.get('ratio_global_pv_kwc'),
+        price_profile=prof,
+    )
+    try:
+        row = affaire_baselines.validate_fiche_baseline(
+            affaire_id,
+            profil,
+            fiche,
+            preview,
+            label=data.get('label'),
+        )
+        return jsonify({'ok': True, 'baseline': row, 'preview': preview})
+    except Exception as exc:
+        logger.exception('baseline validate failed')
+        return jsonify({'ok': False, 'message': str(exc)}), 400
+
+
+@app.route('/api/affaire/<int:affaire_id>/baseline/new_version', methods=['POST'])
+def api_affaire_baseline_new_version(affaire_id):
+    """Nouvelle version estimation (même phase) — ex. APD v2."""
+    affaire, profil = _affaire_or_404(affaire_id)
+    if not affaire:
+        return jsonify({'ok': False, 'message': 'Affaire introuvable'}), 404
+    try:
+        out = affaire_baselines.start_new_estimation_version(affaire_id, profil)
+        return jsonify(out)
+    except Exception as exc:
+        logger.exception('baseline new_version failed')
+        return jsonify({'ok': False, 'message': str(exc)}), 400
+
+
+@app.route('/api/affaire/<int:affaire_id>/drift/check')
+def api_affaire_drift_check(affaire_id):
+    affaire, profil = _affaire_or_404(affaire_id)
+    if not affaire:
+        return jsonify({'ok': False, 'message': 'Affaire introuvable'}), 404
+    scope = (request.args.get('scope') or affaire_drift.SCOPE_ESTIMATION).strip().lower()
+    if scope == affaire_drift.SCOPE_FICHE:
+        data = request.args.to_dict()
+        fiche = _fiche_fields_from_request(data)
+        preview = compute_affaire_preview_estimation(
+            surface_sdo=fiche.get('surface_sdo') or affaire.get('surface_sdo'),
+            puissance_pv_kwc=fiche.get('puissance_pv_kwc') or affaire.get('puissance_pv_kwc'),
+            taux_phase=fiche.get('taux_phase') or affaire.get('taux_phase'),
+            taux_incertitude=fiche.get('taux_incertitude') or affaire.get('taux_incertitude'),
+            coef_risque=fiche.get('coef_risque') or affaire.get('coef_risque'),
+            coef_complexity_cfo=fiche.get('coef_complexity_cfo') or affaire.get('coef_complexity_cfo'),
+            coef_complexity_cfa=fiche.get('coef_complexity_cfa') or affaire.get('coef_complexity_cfa'),
+            pv_system_type=fiche.get('pv_system_type') or affaire.get('pv_system_type'),
+            ratio_global_cfo_m2=fiche.get('ratio_global_cfo_m2'),
+            ratio_global_cfa_m2=fiche.get('ratio_global_cfa_m2'),
+            ratio_global_pv_kwc=fiche.get('ratio_global_pv_kwc'),
+            price_profile=profil,
+        )
+        drift = affaire_drift.check_fiche_drift(affaire_id, fiche, preview, profil)
+    else:
+        drift = affaire_drift.check_estimation_drift(affaire_id, profil)
+    return jsonify({'ok': True, 'drift': _serialize_drift_response(drift)})
+
+
+@app.route('/api/affaire/<int:affaire_id>/drift/pending')
+def api_affaire_drift_pending(affaire_id):
+    affaire, profil = _affaire_or_404(affaire_id)
+    if not affaire:
+        return jsonify({'ok': False, 'message': 'Affaire introuvable'}), 404
+    scope = (request.args.get('scope') or affaire_drift.SCOPE_ESTIMATION).strip().lower()
+    pending = affaire_drift.get_pending_event(affaire_id, scope, profil)
+    if not pending:
+        return jsonify({'ok': True, 'pending': None})
+    return jsonify({'ok': True, 'pending': _serialize_drift_response({'pending_event': pending})})
+
+
+@app.route('/api/affaire/<int:affaire_id>/drift/justify', methods=['POST'])
+def api_affaire_drift_justify(affaire_id):
+    affaire, profil = _affaire_or_404(affaire_id)
+    if not affaire:
+        return jsonify({'ok': False, 'message': 'Affaire introuvable'}), 404
+    data = request.get_json(force=True) or {}
+    event_id = data.get('event_id')
+    if not event_id:
+        return jsonify({'ok': False, 'message': 'event_id requis'}), 400
+    try:
+        row = affaire_drift.save_justifications(
+            int(event_id),
+            data.get('items') or [],
+            data.get('global_justification'),
+            profil,
+        )
+        return jsonify({'ok': True, 'event': row})
+    except Exception as exc:
+        logger.exception('drift justify failed')
+        return jsonify({'ok': False, 'message': str(exc)}), 400
 
 
 @app.route('/import')
@@ -800,12 +1430,29 @@ def import_upload():
     # Paramètres du formulaire
     name          = request.form.get('name') or os.path.splitext(f.filename)[0]
     devis_date    = request.form.get('devis_date') or date.today().isoformat()
-    category_id   = request.form.get('category_id') or '1'
+    category_id   = (request.form.get('category_id') or '').strip()
     sdo           = request.form.get('sdo') or '1000'
+    puissance_pv  = request.form.get('puissance_pv_kwc') or '0'
     coef_cfo      = request.form.get('coef_cfo') or '1.0'
     coef_cfa      = request.form.get('coef_cfa') or '1.0'
     coef_pv       = request.form.get('coef_pv')  or '1.0'
     total_ht_cell = request.form.get('total_ht_cell') or ''
+
+    if not category_id:
+        flash('Type de bâtiment obligatoire pour alimenter le référentiel ratios.', 'error')
+        return redirect(url_for('import_page'))
+    try:
+        sdo_f = float(sdo)
+        if sdo_f <= 0:
+            raise ValueError('SDO')
+    except (TypeError, ValueError):
+        flash('Surface SDO invalide (doit être > 0).', 'error')
+        return redirect(url_for('import_page'))
+    try:
+        kwc_f = float(puissance_pv or 0)
+    except (TypeError, ValueError):
+        flash('Puissance PV (kWc) invalide.', 'error')
+        return redirect(url_for('import_page'))
 
     # Construction de la commande CLI
     cmd = [
@@ -819,6 +1466,7 @@ def import_upload():
         '--coef-cfo',    coef_cfo,
         '--coef-cfa',    coef_cfa,
         '--coef-pv',     coef_pv,
+        '--kwp',         str(kwc_f),
     ]
     if total_ht_cell:
         cmd += ['--total-ht-cell', total_ht_cell]
@@ -860,8 +1508,37 @@ def import_upload():
         finally:
             conn.close()
 
+    ratio_warning = None
+    if success and project_id_created:
+        cat_name = ratio_ref.category_name_from_id(category_id, import_profile)
+        if cat_name:
+            try:
+                ratio_ref.insert_devis_source(
+                    name=name,
+                    category_name=cat_name,
+                    devis_date=devis_date,
+                    surface_sdo=sdo_f,
+                    puissance_pv_kwc=kwc_f,
+                    coef_cfo=float(coef_cfo),
+                    coef_cfa=float(coef_cfa),
+                    coef_pv=float(coef_pv),
+                    filepath=filepath,
+                    total_ht_cell=total_ht_cell or None,
+                    source_file=f.filename,
+                    price_profile=import_profile,
+                    project_id=project_id_created,
+                )
+            except Exception as exc:
+                logger.exception('ratio_referentiel insert failed')
+                ratio_warning = str(exc)
+
     # Redirection directe vers le cockpit Matching si import OK
     if success and project_id_created:
+        if ratio_warning:
+            flash(
+                f'Import OK — référentiel ratios non mis à jour : {ratio_warning}',
+                'error',
+            )
         return redirect(url_for(
             'matching_view',
             project_id=project_id_created,

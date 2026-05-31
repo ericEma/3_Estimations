@@ -42,13 +42,19 @@
                  value="1000" min="100" step="50" required>
         </div>
         <div class="form-group">
-          <label>Type de bâtiment</label>
-          <select name="category_id" class="form-control">
-            <option value="1">Hospitalier</option>
+          <label>Type de bâtiment *</label>
+          <select name="category_id" class="form-control" required>
+            <option value="">— Sélectionner —</option>
             {% for cat in categories %}
             <option value="{{ cat.id }}">{{ cat.name }}</option>
             {% endfor %}
           </select>
+        </div>
+        <div class="form-group">
+          <label>Puissance PV (kWc)</label>
+          <input type="number" name="puissance_pv_kwc" class="form-control"
+                 value="0" min="0" step="10">
+          <span class="form-hint">Obligatoire si le devis contient un lot Photovoltaïque</span>
         </div>
         <div class="form-group">
           <label>Cellule Total HT</label>

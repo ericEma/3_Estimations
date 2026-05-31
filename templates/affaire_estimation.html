@@ -70,15 +70,70 @@
   </div>
 </div>
 
+<div id="estim-baseline-panel" class="estim-baseline-panel">
+  <div class="estim-baseline-head">
+    <span class="estim-baseline-title">Validation estimation client</span>
+    <div id="estim-baseline-status" class="baseline-status baseline-status-none">
+      {% if active_baseline %}
+      Estimation validée — {{ active_baseline.phase_etude }} v{{ active_baseline.version_num }}
+      · {{ active_baseline.total_ht | int }} € HT
+      · {{ active_baseline.validated_at[:10] if active_baseline.validated_at else '—' }}
+      {% else %}
+      Aucune estimation validée pour cette phase.
+      {% endif %}
+    </div>
+  </div>
+  <div id="estim-baseline-correct-banner" class="baseline-correct-banner" style="display:none">
+    Correction en cours — modifiez l'estimation puis re-validez.
+  </div>
+  <div class="estim-baseline-actions">
+    <button type="button" id="btn-estim-baseline-validate" class="btn btn-primary btn-sm"
+            {% if active_baseline %}style="display:none"{% endif %}>
+      Valider l'estimation client
+    </button>
+    <button type="button" id="btn-estim-baseline-correct" class="btn btn-secondary btn-sm"
+            {% if not active_baseline %}style="display:none"{% endif %}>
+      Corriger l'estimation validée
+    </button>
+    <button type="button" id="btn-estim-baseline-revalidate" class="btn btn-primary btn-sm" style="display:none">
+      Re-valider l'estimation
+    </button>
+    <button type="button" id="btn-estim-baseline-cancel-correct" class="btn btn-secondary btn-sm" style="display:none">
+      Annuler
+    </button>
+    <button type="button" id="btn-estim-baseline-new-version" class="btn btn-outlined btn-sm"
+            {% if not active_baseline %}style="display:none"{% endif %}
+            title="Clôturer la version courante et démarrer une nouvelle itération (ex. APD v2)">
+      Nouvelle version {{ affaire.phase_etude or 'APD' }}
+    </button>
+  </div>
+  {% if baseline_history %}
+  <details class="estim-baseline-history">
+    <summary>Historique validations ({{ baseline_history|length }})</summary>
+    <ul class="baseline-history-list">
+      {% for b in baseline_history %}
+      <li>
+        <span class="baseline-hist-status baseline-hist-{{ b.status }}">{{ b.status }}</span>
+        {{ b.phase_etude }} v{{ b.version_num }} — {{ b.total_ht | int }} € HT
+        {% if b.validated_at %}· {{ b.validated_at[:10] }}{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>
+
 <div class="tbar">
   <span class="tbar-title" id="tbar-title">{{ affaire.name }} — {% if affaire.estimation_initialized_at %}estimation figée (création){% else %}catalogue live{% endif %}</span>
   <div class="search-wrap">
     <svg class="search-ico" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l3 3"/></svg>
     <input class="search-inp" id="search-inp" type="text" placeholder="Rechercher…">
   </div>
-  <button type="button" class="btn btn-outlined" id="btn-export-xlsx" title="Fonctionnalité à venir">
+  <a class="btn btn-outlined" id="btn-export-xlsx"
+     href="{{ url_for('affaire_estimation_export_dpgf', affaire_id=affaire.id, profil=price_profile) }}"
+     title="Télécharger le DPGF Excel">
     Export Excel
-  </button>
+  </a>
   <button type="button" class="btn btn-outlined" onclick="setExpandAll(true)">Tout ouvrir</button>
   <button type="button" class="btn btn-outlined" onclick="setExpandAll(false)">Tout fermer</button>
   <span class="tt-count" id="art-count"></span>
@@ -117,12 +172,67 @@
 </div>
 
 <div id="flash-msg" class="flash-msg" style="display:none"></div>
+
+<div id="drift-modal" class="drift-modal" style="display:none" role="dialog" aria-labelledby="drift-modal-title">
+  <div class="drift-modal-backdrop"></div>
+  <div class="drift-modal-panel">
+    <h3 id="drift-modal-title">Dérive &gt; ±3 % — justifications requises</h3>
+    <p id="drift-modal-summary" class="drift-modal-summary"></p>
+    <div id="drift-items-wrap" class="drift-items-wrap"></div>
+    <label class="drift-global-lbl" for="drift-global-justif">Justification globale (leviers hors détail : SDO, ratios, provisions…)</label>
+    <textarea id="drift-global-justif" class="drift-global-inp" rows="3" placeholder="Ex. : hausse SDO programme MOA +120 m²…"></textarea>
+    <div class="drift-modal-actions">
+      <button type="button" class="btn btn-primary btn-sm" id="btn-drift-submit">Enregistrer les justifications</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.estim-baseline-panel {
+  margin: 12px 16px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel, var(--bg-base));
+}
+.estim-baseline-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.estim-baseline-title { font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); }
+.estim-baseline-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.estim-baseline-history { margin-top: 8px; font-size: 12px; color: var(--text-muted); }
+.baseline-status { font-size: 12px; padding: 8px 10px; border-radius: 4px; flex: 1; min-width: 200px; }
+.baseline-status-none { background: var(--bg-base); color: var(--text-muted); border: 1px dashed var(--border); }
+.baseline-status-ok { background: rgba(111,255,111,.08); color: #8fdf8f; border: 1px solid rgba(111,255,111,.25); }
+.baseline-correct-banner { font-size: 12px; padding: 8px; margin-top: 8px; background: rgba(250,160,0,.1); color: #fa0; border-radius: 4px; }
+.baseline-history-list { list-style: none; padding: 8px 0 0; margin: 0; }
+.baseline-history-list li { padding: 4px 0; border-bottom: 1px solid var(--border); }
+.baseline-hist-status { font-size: 10px; font-weight: 700; text-transform: uppercase; margin-right: 6px; }
+.baseline-hist-active { color: #8fdf8f; }
+.baseline-hist-superseded { color: var(--text-muted); }
+.baseline-hist-remise { color: var(--accent2); }
+.drift-modal { position: fixed; inset: 0; z-index: 9000; display: flex; align-items: center; justify-content: center; }
+.drift-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.55); }
+.drift-modal-panel {
+  position: relative; z-index: 1; width: min(720px, 94vw); max-height: 88vh; overflow: auto;
+  background: var(--bg-panel, #0f2a35); border: 1px solid var(--border); border-radius: 8px;
+  padding: 18px 20px; box-shadow: 0 12px 40px rgba(0,0,0,.45);
+}
+.drift-modal-summary { font-size: 13px; color: var(--text-muted); margin: 8px 0 14px; }
+.drift-item-row { margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.drift-item-lbl { font-size: 12px; font-weight: 600; display: block; margin-bottom: 4px; }
+.drift-item-meta { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+.drift-item-inp { width: 100%; min-height: 52px; font-size: 12px; padding: 6px 8px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--bg-base); color: inherit; }
+.drift-global-lbl { display: block; font-size: 12px; margin: 12px 0 6px; color: var(--accent2); }
+.drift-global-inp { width: 100%; font-size: 12px; padding: 8px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--bg-base); color: inherit; }
+.drift-modal-actions { margin-top: 14px; display: flex; justify-content: flex-end; }
+</style>
 {% endblock %}
 
 {% block page_footer %}
 <div class="statusbar">
-  <div class="sb-dot"></div>
-  <span>Estimation affaire · sauvegarde automatique</span>
+  <div class="sb-dot" id="sb-dot"></div>
+  <span id="sb-save-label">Estimation affaire · sauvegarde automatique</span>
   <span id="statusbar-ctx">{{ affaire.name }} · SDO {{ affaire.surface_sdo | int }} m²</span>
 </div>
 {% endblock %}
@@ -142,6 +252,11 @@ const INIT_SECTION_STATE = {{ section_state | tojson }};
 const CATALOG_ROWS = {{ catalog_rows | tojson }};
 const CUSTOM_ROWS  = {{ custom_rows | tojson }};
 const INITIAL_TOTALS = {{ totals | tojson }};
+const PRICE_PROFIL = {{ (price_profile or '') | tojson }};
+const INIT_PHASE = {{ (affaire.phase_etude or 'APD') | tojson }};
+const ACTIVE_BASELINE = {{ active_baseline | tojson }};
+const BASELINE_HISTORY = {{ baseline_history | tojson }};
+const PENDING_DRIFT = {{ pending_drift | tojson }};
 </script>
 <script src="{{ url_for('static', filename='js/affaire_estimation.js') }}"></script>
 {% endblock %}

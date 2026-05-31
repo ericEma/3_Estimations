@@ -100,7 +100,7 @@
       <div class="card-header">
         <span class="card-title">📏 Ratios globaux de référence</span>
         <span style="font-size:12px;color:var(--text-muted)">
-          Base lot avant complexité, type PV et provisions
+          Source : référentiel statistiques par typologie (repli bibliothèque si absent)
         </span>
       </div>
       <div class="form-grid form-grid-3">
@@ -275,11 +275,76 @@
           </div>
         </div>
         <div id="preview-hint" style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.4">
-          Base de prix (pu_ht_ref) : <span id="preview-ratio-detail">—</span>
+          Ratios de référence : <span id="preview-ratio-detail">—</span>
+          <span id="preview-ratio-source" style="display:block;margin-top:4px"></span>
         </div>
         <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
-          Basée sur la base de prix mise à jour le <span id="preview-maj-date">{{ maj_date_bdd or '—' }}</span>
+          Source : <span id="preview-source-label">typologie devis réels</span>
+          · MAJ <span id="preview-maj-date">{{ maj_date_bdd or '—' }}</span>
         </div>
+        {% if edit_mode %}
+        <div style="margin-top:12px">
+          <a class="btn btn-outlined btn-sm"
+             href="{{ url_for('affaire_fiche_export', affaire_id=affaire.id, profil=price_profile) }}"
+             title="Télécharger la carte client au format Excel">
+            Export carte Excel
+          </a>
+        </div>
+        {% endif %}
+
+        {% if edit_mode %}
+        <div id="baseline-panel" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">
+            Carte client (remise MOA / concours)
+          </div>
+          <div id="baseline-status" class="baseline-status baseline-status-none">
+            {% if active_baseline %}
+            Carte validée — {{ active_baseline.phase_etude }} v{{ active_baseline.version_num }}
+            · {{ active_baseline.total_ht | int }} € HT
+            · {{ active_baseline.validated_at[:10] if active_baseline.validated_at else '—' }}
+            {% else %}
+            Aucune carte validée pour cette phase.
+            {% endif %}
+          </div>
+          <div id="baseline-correct-banner" class="baseline-correct-banner" style="display:none">
+            Mode correction — modifiez les paramètres puis re-validez.
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
+            <button type="button" id="btn-baseline-validate" class="btn btn-primary btn-sm"
+                    {% if active_baseline %}style="display:none"{% endif %}>
+              Valider la carte client
+            </button>
+            <button type="button" id="btn-baseline-correct" class="btn btn-secondary btn-sm"
+                    {% if not active_baseline %}style="display:none"{% endif %}>
+              Corriger la carte validée
+            </button>
+            <button type="button" id="btn-baseline-revalidate" class="btn btn-primary btn-sm" style="display:none">
+              Re-valider la carte
+            </button>
+            <button type="button" id="btn-baseline-cancel-correct" class="btn btn-secondary btn-sm" style="display:none">
+              Annuler
+            </button>
+          </div>
+          {% if baseline_history %}
+          <details style="margin-top:12px;font-size:12px">
+            <summary style="cursor:pointer;color:var(--text-muted)">Historique validations ({{ baseline_history|length }})</summary>
+            <ul class="baseline-history-list">
+              {% for b in baseline_history %}
+              <li>
+                <span class="baseline-hist-status baseline-hist-{{ b.status }}">{{ b.status }}</span>
+                {{ b.phase_etude }} v{{ b.version_num }} — {{ b.total_ht | int }} €
+                <span style="color:var(--text-muted)">{{ b.validated_at[:16] if b.validated_at else '' }}</span>
+              </li>
+              {% endfor %}
+            </ul>
+          </details>
+          {% endif %}
+        </div>
+        {% else %}
+        <p style="font-size:11px;color:var(--text-muted);margin-top:12px;font-style:italic">
+          Après création, ouvrez la fiche pour valider la carte client avant remise MOA.
+        </p>
+        {% endif %}
       </div>
 
     </div>
@@ -308,13 +373,78 @@
   <div id="progress-label" style="font-size:12px;color:var(--text-muted)">0%</div>
 </div>
 
+{% if edit_mode %}
+<div id="drift-modal" class="drift-modal" style="display:none" role="dialog">
+  <div class="drift-modal-backdrop"></div>
+  <div class="drift-modal-panel">
+    <h3>Dérive &gt; ±3 % — justifications requises (carte client)</h3>
+    <p id="drift-modal-summary" class="drift-modal-summary"></p>
+    <div id="drift-items-wrap"></div>
+    <label class="drift-global-lbl" for="drift-global-justif">Justification globale (leviers hors détail)</label>
+    <textarea id="drift-global-justif" class="drift-global-inp" rows="3"></textarea>
+    <div class="drift-modal-actions">
+      <button type="button" class="btn btn-primary btn-sm" id="btn-drift-submit">Enregistrer</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <script src="{{ url_for('static', filename='js/complexity_scale.js') }}"></script>
 <script src="{{ url_for('static', filename='js/pv_system_scale.js') }}"></script>
+<style>
+.baseline-status { font-size: 12px; padding: 8px 10px; border-radius: 4px; margin-top: 4px; }
+.baseline-status-none { background: var(--bg-base); color: var(--text-muted); border: 1px dashed var(--border); }
+.baseline-status-ok { background: rgba(111,255,111,.08); color: #8fdf8f; border: 1px solid rgba(111,255,111,.25); }
+.baseline-correct-banner { font-size: 12px; padding: 8px; margin-top: 8px; background: rgba(250,160,0,.1); color: #fa0; border-radius: 4px; }
+.baseline-history-list { list-style: none; padding: 8px 0 0; margin: 0; }
+.baseline-history-list li { padding: 4px 0; border-bottom: 1px solid var(--border); }
+.baseline-hist-status { font-size: 10px; font-weight: 700; text-transform: uppercase; margin-right: 6px; }
+.baseline-hist-active { color: #8fdf8f; }
+.baseline-hist-superseded { color: var(--text-muted); }
+.baseline-hist-remise { color: var(--accent2); }
+.drift-modal { position: fixed; inset: 0; z-index: 9000; display: flex; align-items: center; justify-content: center; }
+.drift-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.55); }
+.drift-modal-panel { position: relative; z-index: 1; width: min(720px, 94vw); max-height: 88vh; overflow: auto;
+  background: var(--bg-panel, #0f2a35); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; }
+.drift-modal-summary { font-size: 13px; color: var(--text-muted); margin: 8px 0 14px; }
+.drift-item-row { margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.drift-item-lbl { font-size: 12px; font-weight: 600; display: block; }
+.drift-item-meta { font-size: 11px; color: var(--text-muted); margin: 4px 0; }
+.drift-item-inp { width: 100%; min-height: 48px; font-size: 12px; padding: 6px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--bg-base); color: inherit; }
+.drift-global-lbl { display: block; font-size: 12px; margin: 12px 0 6px; color: var(--accent2); }
+.drift-global-inp { width: 100%; font-size: 12px; padding: 8px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--bg-base); color: inherit; }
+.drift-modal-actions { margin-top: 14px; text-align: right; }
+</style>
 <script>
+const PENDING_DRIFT = {{ pending_drift | tojson if edit_mode and pending_drift is defined else 'null' }};
+const AFFAIRE_ID = {{ current_affaire_id | tojson if edit_mode else 'null' }};
+const EDIT_MODE = {{ 'true' if edit_mode else 'false' }};
+const ORIGINAL_CATEGORY_ID = {{ affaire.category_id | tojson if edit_mode and affaire else 'null' }};
+const PRICE_PROFIL = {{ (price_profile or '') | tojson }};
 const PHASE_PRESETS_NEW = { DIAG: 6, APS: 4, APD: 3, PRO: 1 };
 const EUR_FMT = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
 let _previewTimer = null;
 let _previewAbort = null;
+let _lastPreview = null;
+let _baselineCorrectMode = false;
+let _ratiosManualOverride = false;
+
+function _setRatioInput(name, val, dec) {
+    if (val == null) return;
+    const el = document.querySelector(`[name=${name}]`);
+    if (el) el.value = Number(val).toFixed(dec);
+}
+
+function _bindRatioManualOverride() {
+    ['ratio_global_cfo_m2', 'ratio_global_cfa_m2', 'ratio_global_pv_kwc'].forEach(name => {
+        const el = document.querySelector(`[name=${name}]`);
+        if (!el || el.dataset.manualBound) return;
+        el.dataset.manualBound = '1';
+        el.addEventListener('input', () => { _ratiosManualOverride = true; });
+    });
+}
 
 function applyPhasePreset(phase) {
     const preset = PHASE_PRESETS_NEW[phase] ?? 3;
@@ -337,6 +467,7 @@ function _previewParams() {
         ratio_global_pv_kwc: document.querySelector('[name=ratio_global_pv_kwc]').value || '',
         puissance_pv_kwc: document.getElementById('input-pv-kwc').value || '100',
         pv_system_type: document.querySelector('[name=pv_system_type]').value || 'toiture',
+        ratio_manual: _ratiosManualOverride ? '1' : '0',
     });
 }
 
@@ -355,6 +486,7 @@ async function _fetchPreview() {
         });
         const data = await res.json();
         if (!data.ok) return;
+        _lastPreview = data;
         document.getElementById('preview-cfo').textContent = EUR_FMT.format(data.prix_cfo);
         document.getElementById('preview-cfa').textContent = EUR_FMT.format(data.prix_cfa);
         document.getElementById('preview-pv').textContent = EUR_FMT.format(data.prix_pv);
@@ -377,14 +509,166 @@ async function _fetchPreview() {
             ratioEl.textContent =
                 `CFO ${rCfo} €/m² · CFA ${rCfa} €/m² · PV ${rPv} €/kWc`;
         }
+        const srcEl = document.getElementById('preview-source-label');
+        if (srcEl) {
+            const labels = {
+                typologie: 'référentiel devis réels (typologie)',
+                typologie_moyenne_autres: 'référentiel devis réels (moyenne typologies Autres)',
+                bibliotheque: 'base de prix bibliothèque (repli)',
+            };
+            srcEl.textContent = labels[data.ratio_source] || labels.bibliotheque;
+        }
+        if (
+            (data.ratio_source === 'typologie' || data.ratio_source === 'typologie_moyenne_autres')
+            && !_ratiosManualOverride
+        ) {
+            _setRatioInput('ratio_global_cfo_m2', data.ratio_m2_cfo, 2);
+            _setRatioInput('ratio_global_cfa_m2', data.ratio_m2_cfa, 2);
+            _setRatioInput('ratio_global_pv_kwc', data.ratio_kwc_pv, 2);
+        }
     } catch (e) {
         if (e.name !== 'AbortError') console.warn('preview', e);
     }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+async function loadTypologyRatios(showCategoryAlert) {
+    const cat = document.getElementById('select-category');
+    if (!cat || !cat.value) return false;
+    if (showCategoryAlert && EDIT_MODE && ORIGINAL_CATEGORY_ID && String(cat.value) !== String(ORIGINAL_CATEGORY_ID)) {
+        const oldCfo = document.querySelector('[name=ratio_global_cfo_m2]').value;
+        const oldCfa = document.querySelector('[name=ratio_global_cfa_m2]').value;
+        const oldPv = document.querySelector('[name=ratio_global_pv_kwc]').value;
+        alert(
+            'Ratios modifiés suite au changement de type de bâtiment.\n\n' +
+            'Anciens ratios :\n' +
+            `CFO ${oldCfo} €/m² · CFA ${oldCfa} €/m² · PV ${oldPv} €/kWc`
+        );
+    }
+    try {
+        const res = await fetch(`/api/ratios/typologie?category_id=${encodeURIComponent(cat.value)}`);
+        const data = await res.json();
+        if (!data.ok) return false;
+        if (!data.found) return false;
+        _ratiosManualOverride = false;
+        _setRatioInput('ratio_global_cfo_m2', data.ratio_m2_cfo, 2);
+        _setRatioInput('ratio_global_cfa_m2', data.ratio_m2_cfa, 2);
+        _setRatioInput('ratio_global_pv_kwc', data.ratio_kwc_pv, 2);
+        return true;
+    } catch (e) {
+        console.warn('typologie ratios', e);
+        return false;
+    }
+}
+
+function _collectFichePayload() {
+    const cat = document.getElementById('select-category');
+    return {
+        name: document.querySelector('[name=name]').value,
+        category_id: cat && cat.value ? cat.value : null,
+        surface_sdo: document.querySelector('[name=surface_sdo]').value,
+        kva_cible: document.querySelector('[name=kva_cible]').value,
+        puissance_pv_kwc: document.getElementById('input-pv-kwc').value,
+        ratio_global_cfo_m2: document.querySelector('[name=ratio_global_cfo_m2]').value,
+        ratio_global_cfa_m2: document.querySelector('[name=ratio_global_cfa_m2]').value,
+        ratio_global_pv_kwc: document.querySelector('[name=ratio_global_pv_kwc]').value,
+        coef_complexity_cfo: document.querySelector('[name=coef_complexity_cfo]').value,
+        coef_complexity_cfa: document.querySelector('[name=coef_complexity_cfa]').value,
+        pv_system_type: document.querySelector('[name=pv_system_type]').value,
+        phase_etude: document.getElementById('select-phase').value,
+        taux_phase: document.getElementById('input-taux-phase').value,
+        taux_incertitude: document.getElementById('input-incertitude').value,
+        coef_risque: document.getElementById('input-risque').value,
+    };
+}
+
+function _baselineApiUrl(path) {
+    const qs = PRICE_PROFIL ? `?profil=${encodeURIComponent(PRICE_PROFIL)}` : '';
+    return `/api/affaire/${AFFAIRE_ID}${path}${qs}`;
+}
+
+function _setBaselineUi(active) {
+    const status = document.getElementById('baseline-status');
+    const btnVal = document.getElementById('btn-baseline-validate');
+    const btnCor = document.getElementById('btn-baseline-correct');
+    const btnRe = document.getElementById('btn-baseline-revalidate');
+    const btnCancel = document.getElementById('btn-baseline-cancel-correct');
+    const banner = document.getElementById('baseline-correct-banner');
+    if (!status) return;
+
+    if (_baselineCorrectMode) {
+        status.className = 'baseline-status baseline-status-none';
+        status.textContent = 'Correction en cours — modifiez puis re-validez.';
+        if (btnVal) btnVal.style.display = 'none';
+        if (btnCor) btnCor.style.display = 'none';
+        if (btnRe) btnRe.style.display = '';
+        if (btnCancel) btnCancel.style.display = '';
+        if (banner) banner.style.display = '';
+        return;
+    }
+
+    if (active && active.total_ht != null) {
+        status.className = 'baseline-status baseline-status-ok';
+        status.textContent =
+            `Carte validée — ${active.phase_etude} v${active.version_num} · ` +
+            `${Math.round(active.total_ht).toLocaleString('fr-FR')} € HT · ` +
+            (active.validated_at ? String(active.validated_at).slice(0, 10) : '');
+        if (btnVal) btnVal.style.display = 'none';
+        if (btnCor) btnCor.style.display = '';
+        if (btnRe) btnRe.style.display = 'none';
+        if (btnCancel) btnCancel.style.display = 'none';
+        if (banner) banner.style.display = 'none';
+    } else {
+        status.className = 'baseline-status baseline-status-none';
+        status.textContent = 'Aucune carte validée pour cette phase.';
+        if (btnVal) btnVal.style.display = '';
+        if (btnCor) btnCor.style.display = 'none';
+        if (btnRe) btnRe.style.display = 'none';
+        if (btnCancel) btnCancel.style.display = 'none';
+        if (banner) banner.style.display = 'none';
+    }
+}
+
+async function validateBaselineCard() {
+    if (!AFFAIRE_ID) return;
+    await _fetchPreview();
+    if (!_lastPreview) {
+        alert('Calcul preview indisponible — réessayez.');
+        return;
+    }
+    try {
+        const res = await fetch(_baselineApiUrl('/baseline/validate'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(_collectFichePayload()),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+            alert(data.message || 'Validation impossible');
+            return;
+        }
+        _baselineCorrectMode = false;
+        _setBaselineUi(data.baseline);
+        alert('Carte client mémorisée.');
+    } catch (e) {
+        console.warn('validate baseline', e);
+        alert('Erreur réseau.');
+    }
+}
+
+function startBaselineCorrection() {
+    _baselineCorrectMode = true;
+    _setBaselineUi(null);
+}
+
+function cancelBaselineCorrection() {
+    _baselineCorrectMode = false;
+    location.reload();
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
     initAffaireNewComplexitySliders();
     initAffaireNewPvSystemSlider();
+    _bindRatioManualOverride();
     ['cfo', 'cfa'].forEach(lot => {
         const slider = document.querySelector(`[data-cplx-slider="${lot}"]`);
         if (slider) slider.addEventListener('input', updatePreview);
@@ -394,9 +678,97 @@ document.addEventListener('DOMContentLoaded', () => {
         el.addEventListener('change', updatePreview);
     });
     const cat = document.getElementById('select-category');
-    if (cat) cat.addEventListener('change', updatePreview);
+    const isEditMode = {{ 'true' if edit_mode else 'false' }};
+    if (cat) {
+        cat.addEventListener('change', () => {
+            loadTypologyRatios(isEditMode).then(updatePreview);
+        });
+        if (cat.value) {
+            await loadTypologyRatios(false);
+        }
+    }
+    if (EDIT_MODE && AFFAIRE_ID) {
+        const bv = document.getElementById('btn-baseline-validate');
+        const bc = document.getElementById('btn-baseline-correct');
+        const br = document.getElementById('btn-baseline-revalidate');
+        const bx = document.getElementById('btn-baseline-cancel-correct');
+        if (bv) bv.addEventListener('click', validateBaselineCard);
+        if (bc) bc.addEventListener('click', startBaselineCorrection);
+        if (br) br.addEventListener('click', validateBaselineCard);
+        if (bx) bx.addEventListener('click', cancelBaselineCorrection);
+        {% if active_baseline %}
+        _setBaselineUi({{ active_baseline | tojson }});
+        {% endif %}
+        initFicheDriftModal();
+    }
     updatePreview();
 });
+
+let _ficheDriftEventId = null;
+
+function initFicheDriftModal() {
+    const btn = document.getElementById('btn-drift-submit');
+    if (btn) btn.addEventListener('click', submitFicheDriftJustifications);
+    if (PENDING_DRIFT && PENDING_DRIFT.id) {
+        showFicheDriftModal(PENDING_DRIFT);
+    }
+}
+
+function showFicheDriftModal(ev) {
+    const modal = document.getElementById('drift-modal');
+    const wrap = document.getElementById('drift-items-wrap');
+    const summary = document.getElementById('drift-modal-summary');
+    if (!modal || !wrap) return;
+    _ficheDriftEventId = ev.id;
+    if (summary) {
+        summary.textContent =
+            `Écart ${ev.drift_pct != null ? ev.drift_pct : '—'} % · ` +
+            `${Math.round(ev.old_total_ht || 0).toLocaleString('fr-FR')} → ` +
+            `${Math.round(ev.new_total_ht || 0).toLocaleString('fr-FR')} € HT`;
+    }
+    wrap.innerHTML = '';
+    (ev.items || []).forEach(it => {
+        if (String(it.item_type || '').startsWith('lever_')) return;
+        const row = document.createElement('div');
+        row.className = 'drift-item-row';
+        row.dataset.itemId = String(it.id);
+        row.innerHTML =
+            `<span class="drift-item-lbl">${it.label}</span>` +
+            `<div class="drift-item-meta">${it.old_value} → ${it.new_value}</div>` +
+            `<textarea class="drift-item-inp" placeholder="Justification…"></textarea>`;
+        wrap.appendChild(row);
+    });
+    modal.style.display = 'flex';
+}
+
+async function submitFicheDriftJustifications() {
+    if (!_ficheDriftEventId) return;
+    const items = [];
+    document.querySelectorAll('#drift-items-wrap .drift-item-row').forEach(row => {
+        items.push({
+            id: parseInt(row.dataset.itemId, 10),
+            justification: row.querySelector('.drift-item-inp')?.value || '',
+        });
+    });
+    const qs = PRICE_PROFIL ? `?profil=${encodeURIComponent(PRICE_PROFIL)}` : '';
+    try {
+        const res = await fetch(`/api/affaire/${AFFAIRE_ID}/drift/justify${qs}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                event_id: _ficheDriftEventId,
+                items,
+                global_justification: document.getElementById('drift-global-justif')?.value || '',
+            }),
+        });
+        const data = await res.json();
+        if (!data.ok) { alert(data.message || 'Erreur'); return; }
+        document.getElementById('drift-modal').style.display = 'none';
+        alert('Justifications enregistrées.');
+    } catch (e) {
+        alert('Erreur réseau.');
+    }
+}
 
 // Overlay de progression au submit
 document.querySelector('form').addEventListener('submit', function() {

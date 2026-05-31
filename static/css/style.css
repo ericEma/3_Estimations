@@ -1443,6 +1443,8 @@ tr.row-art:hover .dup-btn { display:inline-flex; }
 /* ── STATUS BAR ── */
 .statusbar { display:flex; align-items:center; gap:14px; padding:0 14px; height:25px; background:var(--bg2); border-top:1px solid var(--grid-line-strong); font-size:10.5px; color:var(--text-muted); flex-shrink:0; }
 .sb-dot    { width:5px; height:5px; border-radius:50%; background:var(--green); }
+.sb-dot-saving { background:var(--accent); animation: sb-pulse 0.8s ease-in-out infinite alternate; }
+@keyframes sb-pulse { from { opacity: 0.45; } to { opacity: 1; } }
 
 /* ── FLASH NOTIFICATIONS ── */
 .flash-ok  { position:fixed; bottom:20px; right:20px; background:var(--green); color:#001a1e; padding:8px 16px; border-radius:6px; font-size:12px; font-weight:700; z-index:9999; animation:bibl-fadeout 3s forwards; }

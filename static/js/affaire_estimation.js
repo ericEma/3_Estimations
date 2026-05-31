@@ -806,6 +806,26 @@ function showFlash(msg, isErr) {
   showFlash._t = setTimeout(() => { el.style.display = 'none'; }, 2800);
 }
 
+function setSaveStatus(state) {
+  const dot = document.getElementById('sb-dot');
+  const lbl = document.getElementById('sb-save-label');
+  if (!lbl) return;
+  if (state === 'saving') {
+    if (dot) dot.classList.add('sb-dot-saving');
+    lbl.textContent = 'Enregistrement…';
+  } else if (state === 'saved') {
+    if (dot) dot.classList.remove('sb-dot-saving');
+    lbl.textContent = 'Enregistré';
+    clearTimeout(setSaveStatus._t);
+    setSaveStatus._t = setTimeout(() => {
+      lbl.textContent = 'Estimation affaire · sauvegarde automatique';
+    }, 2000);
+  } else if (state === 'error') {
+    if (dot) dot.classList.remove('sb-dot-saving');
+    lbl.textContent = 'Erreur sauvegarde';
+  }
+}
+
 function markDirtyCatalog(row) {
   if (row.is_tree_custom && row.line_id) {
     const key = `tree__${row.line_id}`;
@@ -892,6 +912,7 @@ function flushSave() {
   const changes = Array.from(dirtyMap.values());
   dirtyMap.clear();
   saveInFlight = true;
+  setSaveStatus('saving');
 
   fetch(`/api/affaire/${AFFAIRE_ID}/estimation/save`, {
     method: 'POST',
@@ -917,9 +938,12 @@ function flushSave() {
         }
       }
       if (data.totals) updateKpiStrip(data.totals);
+      if (data.drift) handleDriftResponse(data.drift);
+      setSaveStatus('saved');
       showFlash(`Sauvegardé (${changes.length})`);
     })
     .catch(err => {
+      setSaveStatus('error');
       console.error(err);
       showFlash('Erreur réseau — non sauvegardé', true);
     })
@@ -1494,6 +1518,251 @@ window.__est = {
   promoteArticle: promoteEstimationArticle,
 };
 
+let _estimBaselineCorrectMode = false;
+let _estimActiveBaseline = typeof ACTIVE_BASELINE !== 'undefined' ? ACTIVE_BASELINE : null;
+
+function _estimBaselineApiUrl(path) {
+  const qs = typeof PRICE_PROFIL !== 'undefined' && PRICE_PROFIL
+    ? `?profil=${encodeURIComponent(PRICE_PROFIL)}`
+    : '';
+  return `/api/affaire/${AFFAIRE_ID}${path}${qs}`;
+}
+
+function _setEstimBaselineUi(active) {
+  const status = document.getElementById('estim-baseline-status');
+  const btnVal = document.getElementById('btn-estim-baseline-validate');
+  const btnCor = document.getElementById('btn-estim-baseline-correct');
+  const btnRe = document.getElementById('btn-estim-baseline-revalidate');
+  const btnCancel = document.getElementById('btn-estim-baseline-cancel-correct');
+  const btnNewVer = document.getElementById('btn-estim-baseline-new-version');
+  const banner = document.getElementById('estim-baseline-correct-banner');
+  if (!status) return;
+
+  if (_estimBaselineCorrectMode) {
+    status.className = 'baseline-status baseline-status-none';
+    status.textContent = 'Correction en cours — modifiez l\'estimation puis re-validez.';
+    if (btnVal) btnVal.style.display = 'none';
+    if (btnCor) btnCor.style.display = 'none';
+    if (btnRe) btnRe.style.display = '';
+    if (btnCancel) btnCancel.style.display = '';
+    if (btnNewVer) btnNewVer.style.display = 'none';
+    if (banner) banner.style.display = '';
+    return;
+  }
+
+  if (active && active.total_ht != null) {
+    status.className = 'baseline-status baseline-status-ok';
+    status.textContent =
+      `Estimation validée — ${active.phase_etude} v${active.version_num} · ` +
+      `${Math.round(active.total_ht).toLocaleString('fr-FR')} € HT · ` +
+      (active.validated_at ? String(active.validated_at).slice(0, 10) : '');
+    if (btnVal) btnVal.style.display = 'none';
+    if (btnCor) btnCor.style.display = '';
+    if (btnRe) btnRe.style.display = 'none';
+    if (btnCancel) btnCancel.style.display = 'none';
+    if (btnNewVer) btnNewVer.style.display = '';
+    if (banner) banner.style.display = 'none';
+  } else {
+    status.className = 'baseline-status baseline-status-none';
+    status.textContent = 'Aucune estimation validée pour cette phase.';
+    if (btnVal) btnVal.style.display = '';
+    if (btnCor) btnCor.style.display = 'none';
+    if (btnRe) btnRe.style.display = 'none';
+    if (btnCancel) btnCancel.style.display = 'none';
+    if (btnNewVer) btnNewVer.style.display = 'none';
+    if (banner) banner.style.display = 'none';
+  }
+}
+
+async function validateEstimBaseline() {
+  try {
+    const res = await fetch(_estimBaselineApiUrl('/baseline/validate'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: 'estimation' }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      alert(data.message || 'Validation impossible');
+      return;
+    }
+    _estimBaselineCorrectMode = false;
+    _estimActiveBaseline = data.baseline;
+    _setEstimBaselineUi(data.baseline);
+    showFlash('Estimation client mémorisée');
+  } catch (e) {
+    console.warn('validate estim baseline', e);
+    showFlash('Erreur validation estimation', true);
+  }
+}
+
+function startEstimBaselineCorrection() {
+  _estimBaselineCorrectMode = true;
+  _setEstimBaselineUi(null);
+}
+
+function cancelEstimBaselineCorrection() {
+  _estimBaselineCorrectMode = false;
+  reloadEstimationPage();
+}
+
+async function startEstimNewVersion() {
+  const ph = typeof INIT_PHASE !== 'undefined' ? INIT_PHASE : 'APD';
+  if (!confirm(`Démarrer une nouvelle version ${ph} ? La version validée courante sera clôturée.`)) {
+    return;
+  }
+  try {
+    const res = await fetch(_estimBaselineApiUrl('/baseline/new_version'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      alert(data.message || 'Impossible de créer une nouvelle version');
+      return;
+    }
+    _estimActiveBaseline = null;
+    _estimBaselineCorrectMode = false;
+    _setEstimBaselineUi(null);
+    showFlash(`${ph} v${data.previous_version} clôturée — vous pouvez valider v${data.next_version}`);
+  } catch (e) {
+    console.warn('new version', e);
+    showFlash('Erreur nouvelle version', true);
+  }
+}
+
+function initEstimBaselinePanel() {
+  _setEstimBaselineUi(_estimActiveBaseline);
+  const bv = document.getElementById('btn-estim-baseline-validate');
+  const bc = document.getElementById('btn-estim-baseline-correct');
+  const br = document.getElementById('btn-estim-baseline-revalidate');
+  const bx = document.getElementById('btn-estim-baseline-cancel-correct');
+  const bn = document.getElementById('btn-estim-baseline-new-version');
+  if (bv) bv.addEventListener('click', validateEstimBaseline);
+  if (bc) bc.addEventListener('click', startEstimBaselineCorrection);
+  if (br) br.addEventListener('click', validateEstimBaseline);
+  if (bx) bx.addEventListener('click', cancelEstimBaselineCorrection);
+  if (bn) bn.addEventListener('click', startEstimNewVersion);
+}
+
+let _driftEventId = null;
+
+function _driftApiUrl(path) {
+  const qs = typeof PRICE_PROFIL !== 'undefined' && PRICE_PROFIL
+    ? `?profil=${encodeURIComponent(PRICE_PROFIL)}`
+    : '';
+  return `/api/affaire/${AFFAIRE_ID}${path}${qs}`;
+}
+
+function _formatDriftVal(v) {
+  if (v == null || Number.isNaN(Number(v))) return '—';
+  return Number(v).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
+}
+
+function showDriftModal(driftPayload) {
+  const modal = document.getElementById('drift-modal');
+  const summary = document.getElementById('drift-modal-summary');
+  const wrap = document.getElementById('drift-items-wrap');
+  const globalInp = document.getElementById('drift-global-justif');
+  if (!modal || !wrap || !driftPayload) return;
+
+  _driftEventId = driftPayload.event_id;
+  const pct = driftPayload.drift_pct != null ? driftPayload.drift_pct : '—';
+  if (summary) {
+    summary.textContent =
+      `Écart total ${pct} % · ` +
+      `${_formatDriftVal(driftPayload.old_total_ht)} € → ${_formatDriftVal(driftPayload.new_total_ht)} € HT`;
+  }
+
+  wrap.innerHTML = '';
+  const items = driftPayload.items || [];
+  const hasLevers = items.some(it => String(it.item_type || '').startsWith('lever_'));
+  const globalLbl = document.querySelector('.drift-global-lbl');
+  if (globalLbl) globalLbl.style.display = hasLevers ? '' : 'none';
+  if (globalInp) {
+    globalInp.value = '';
+    globalInp.style.display = hasLevers ? '' : 'none';
+  }
+
+  items.forEach(it => {
+    if (String(it.item_type || '').startsWith('lever_')) return;
+    const row = document.createElement('div');
+    row.className = 'drift-item-row';
+    row.dataset.itemId = String(it.id);
+    row.innerHTML =
+      `<span class="drift-item-lbl">${it.label || it.item_key || 'Poste'}</span>` +
+      `<div class="drift-item-meta">${_formatDriftVal(it.old_value)} → ${_formatDriftVal(it.new_value)}` +
+      (it.drift_pct != null ? ` · ${it.drift_pct} %` : '') +
+      `</div>` +
+      `<textarea class="drift-item-inp" placeholder="Justification…">${it.justification || ''}</textarea>`;
+    wrap.appendChild(row);
+  });
+
+  modal.style.display = 'flex';
+}
+
+function hideDriftModal() {
+  const modal = document.getElementById('drift-modal');
+  if (modal) modal.style.display = 'none';
+  _driftEventId = null;
+}
+
+async function submitDriftJustifications() {
+  if (!_driftEventId) return;
+  const wrap = document.getElementById('drift-items-wrap');
+  const globalInp = document.getElementById('drift-global-justif');
+  const items = [];
+  wrap.querySelectorAll('.drift-item-row').forEach(row => {
+    items.push({
+      id: parseInt(row.dataset.itemId, 10),
+      justification: row.querySelector('.drift-item-inp')?.value || '',
+    });
+  });
+  try {
+    const res = await fetch(_driftApiUrl('/drift/justify'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event_id: _driftEventId,
+        items,
+        global_justification: globalInp ? globalInp.value : '',
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      alert(data.message || 'Enregistrement impossible');
+      return;
+    }
+    hideDriftModal();
+    showFlash('Justifications enregistrées');
+  } catch (e) {
+    console.warn('drift justify', e);
+    showFlash('Erreur enregistrement justifications', true);
+  }
+}
+
+function initDriftModal() {
+  const btn = document.getElementById('btn-drift-submit');
+  if (btn) btn.addEventListener('click', submitDriftJustifications);
+  if (typeof PENDING_DRIFT !== 'undefined' && PENDING_DRIFT && PENDING_DRIFT.id) {
+    showDriftModal({
+      event_id: PENDING_DRIFT.id,
+      drift_pct: PENDING_DRIFT.drift_pct,
+      old_total_ht: PENDING_DRIFT.old_total_ht,
+      new_total_ht: PENDING_DRIFT.new_total_ht,
+      items: PENDING_DRIFT.items || [],
+    });
+  }
+}
+
+function handleDriftResponse(drift) {
+  if (!drift) return;
+  if (drift.requires_justification && drift.event_id) {
+    showDriftModal(drift);
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   restoreExpandStateAfterReload();
   const elTpInit = document.getElementById('hdr-taux-phase');
@@ -1542,7 +1811,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnAddCustom = document.getElementById('btn-add-custom');
   if (btnAddCustom) btnAddCustom.addEventListener('click', addCustomLine);
 
-  document.getElementById('btn-export-xlsx').addEventListener('click', () => {
-    alert('Export Excel — fonctionnalité à venir (placeholder).');
-  });
+  initEstimBaselinePanel();
+  initDriftModal();
 });
